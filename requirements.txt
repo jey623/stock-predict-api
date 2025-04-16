@@ -1,0 +1,6 @@
+flask
+requests
+pandas
+numpy
+xgboost
+beautifulsoup4
