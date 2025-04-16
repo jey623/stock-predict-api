@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 import pandas as pd
@@ -9,9 +10,9 @@ from flask import Flask, request, jsonify
 import warnings
 warnings.filterwarnings("ignore")
 
-# 인증 키
-APPKEY = "jSznBXSFmJAEltzVJW86g5s71zOw1TuWoQMkfU_4q9g"
-SECRETKEY = "kNz2QIvbU9kKni_WSYVArgQCGZVp0PaYZpB-wyhSsZ4"
+# 🔑 환경변수에서 키 불러오기
+APPKEY = os.environ.get("APPKEY")
+SECRETKEY = os.environ.get("SECRETKEY")
 
 # 사전 등록 종목코드
 TICKER_DICT = {
@@ -38,7 +39,7 @@ def get_stock_code_from_name(name):
         print(f"❌ 종목코드 검색 중 오류: {e}")
     return None
 
-# 키움 access token 발급
+# 토큰 발급
 def get_access_token(appkey, secretkey):
     url = 'https://api.kiwoom.com/oauth2/token'
     body = {
@@ -55,7 +56,7 @@ def get_access_token(appkey, secretkey):
     print("❌ access_token 발급 실패")
     return None
 
-# 일봉 데이터 요청
+# 일봉 데이터
 def get_daily_price_data(access_token, stock_code, qry_dt, start_date):
     url = "https://api.kiwoom.com/api/dostk/mrkcond"
     headers = {
@@ -88,7 +89,7 @@ def get_daily_price_data(access_token, stock_code, qry_dt, start_date):
             print("❌ 데이터 파싱 실패:", e)
     return pd.DataFrame()
 
-# 과거 데이터 반복 수집 (3년치 기준)
+# 과거 데이터 수집
 def get_historical_price_data(access_token, stock_code, min_days=100, max_iter=10):
     all_data = pd.DataFrame()
     current_qry_dt = datetime.now()
@@ -133,7 +134,7 @@ def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
         result[day] = pred
     return result, df["Close"].iloc[-1]
 
-# GPTs/Flask에서 호출하는 예측 함수
+# 예측 API
 def predict_multi_future_from_api(stock_name):
     stock_code = TICKER_DICT.get(stock_name)
     if not stock_code:
@@ -171,7 +172,7 @@ def predict_multi_future_from_api(stock_name):
         result["주의사항"] = warning
     return result
 
-# Flask 서버 시작
+# Flask 서버 실행
 app = Flask(__name__)
 
 @app.route('/predict', methods=['GET'])
