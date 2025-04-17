@@ -10,19 +10,42 @@ from flask import Flask, request, jsonify
 import warnings
 warnings.filterwarnings("ignore")
 
-# 🔑 환경변수에서 키 불러오기
+# 🔑 환경변수에서 APPKEY / SECRETKEY 불러오기
 APPKEY = os.environ.get("APPKEY")
 SECRETKEY = os.environ.get("SECRETKEY")
 
-# 사전 등록 종목코드
-TICKER_DICT = {
-    "삼성전자": "005930",
-    "카카오게임즈": "293490",
-    "네이버": "035420",
-    "LG에너지솔루션": "373220",
-    "펄어비스": "263750"
-}
+# ───────────────────────────────────────────────
+# ✅ access_token 자동 발급/갱신
+ACCESS_TOKEN = None
+TOKEN_EXPIRES_AT = 0  # epoch time
 
+def fetch_access_token():
+    global ACCESS_TOKEN, TOKEN_EXPIRES_AT
+
+    # 1시간 유효 / 60초 전이면 새로 발급
+    if ACCESS_TOKEN and time.time() < TOKEN_EXPIRES_AT - 60:
+        return ACCESS_TOKEN
+
+    url = 'https://api.kiwoom.com/oauth2/token'
+    headers = {"Content-Type": "application/json;charset=UTF-8"}
+    data = {
+        "grant_type": "client_credentials",
+        "appkey": APPKEY,
+        "secretkey": SECRETKEY
+    }
+
+    res = requests.post(url, headers=headers, json=data)
+    if res.status_code == 200:
+        token = res.json().get("access_token") or res.json().get("token")
+        expires_in = int(res.json().get("expires_in", 3600))
+        ACCESS_TOKEN = token
+        TOKEN_EXPIRES_AT = time.time() + expires_in
+        print("✅ access_token 발급 성공")
+        return ACCESS_TOKEN
+    print("❌ access_token 발급 실패:", res.status_code, res.text)
+    return None
+
+# ───────────────────────────────────────────────
 # 종목명 → 종목코드 (네이버 금융 크롤링)
 def get_stock_code_from_name(name):
     try:
@@ -36,32 +59,16 @@ def get_stock_code_from_name(name):
             print(f"🔎 종목코드 자동 검색 성공: {name} → {code}")
             return code
     except Exception as e:
-        print(f"❌ 종목코드 검색 중 오류: {e}")
+        print(f"❌ 종목코드 검색 오류: {e}")
     return None
 
-# 토큰 발급
-def get_access_token(appkey, secretkey):
-    url = 'https://api.kiwoom.com/oauth2/token'
-    body = {
-        "grant_type": "client_credentials",
-        "appkey": appkey,
-        "secretkey": secretkey
-    }
-    headers = {"Content-Type": "application/json"}
-    res = requests.post(url, headers=headers, json=body)
-    if res.status_code == 200:
-        token = res.json().get("access_token") or res.json().get("token")
-        print("✅ access_token 발급 성공")
-        return token
-    print("❌ access_token 발급 실패")
-    return None
-
-# 일봉 데이터
-def get_daily_price_data(access_token, stock_code, qry_dt, start_date):
+# ───────────────────────────────────────────────
+# 일봉 데이터 요청
+def get_daily_price_data(token, stock_code, qry_dt, start_date):
     url = "https://api.kiwoom.com/api/dostk/mrkcond"
     headers = {
         'Content-Type': 'application/json;charset=UTF-8',
-        'authorization': f'Bearer {access_token}',
+        'authorization': f'Bearer {token}',
         'api-id': 'ka10086'
     }
     data = {
@@ -72,8 +79,7 @@ def get_daily_price_data(access_token, stock_code, qry_dt, start_date):
     }
     res = requests.post(url, headers=headers, json=data)
     if res.status_code == 200:
-        body = res.json()
-        output = body.get("daly_stkpc", [])
+        output = res.json().get("daly_stkpc", [])
         if not output:
             return pd.DataFrame()
         df = pd.DataFrame(output)
@@ -89,8 +95,9 @@ def get_daily_price_data(access_token, stock_code, qry_dt, start_date):
             print("❌ 데이터 파싱 실패:", e)
     return pd.DataFrame()
 
+# ───────────────────────────────────────────────
 # 과거 데이터 수집
-def get_historical_price_data(access_token, stock_code, min_days=100, max_iter=10):
+def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
     all_data = pd.DataFrame()
     current_qry_dt = datetime.now()
     start_date = (current_qry_dt - timedelta(days=1100)).strftime("%Y%m%d")
@@ -99,7 +106,7 @@ def get_historical_price_data(access_token, stock_code, min_days=100, max_iter=1
     while len(all_data) < min_days and iter_count < max_iter:
         qry_dt_str = current_qry_dt.strftime("%Y%m%d")
         print(f"📅 데이터 요청: qry_dt={qry_dt_str}, start_dt={start_date}")
-        df_partial = get_daily_price_data(access_token, stock_code, qry_dt_str, start_date)
+        df_partial = get_daily_price_data(token, stock_code, qry_dt_str, start_date)
         if df_partial.empty:
             print("❌ 추가 데이터 없음")
             break
@@ -112,7 +119,8 @@ def get_historical_price_data(access_token, stock_code, min_days=100, max_iter=1
     print(f"📦 최종 불러온 일봉 데이터 수: {len(all_data)}개")
     return all_data
 
-# 예측
+# ───────────────────────────────────────────────
+# 예측 모델 (XGBoost)
 def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
     df = df.copy()
     df["Return"] = df["Close"].pct_change()
@@ -134,16 +142,15 @@ def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
         result[day] = pred
     return result, df["Close"].iloc[-1]
 
-# 예측 API
+# ───────────────────────────────────────────────
+# 전체 예측 흐름
 def predict_multi_future_from_api(stock_name):
-    stock_code = TICKER_DICT.get(stock_name)
+    stock_code = get_stock_code_from_name(stock_name)
     if not stock_code:
-        stock_code = get_stock_code_from_name(stock_name)
-        if not stock_code:
-            return {"error": f"❌ 종목 코드 검색 실패: {stock_name}"}
+        return {"error": f"❌ 종목 코드 검색 실패: {stock_name}"}
 
     print(f"\n🔎 종목명: {stock_name}, 종목코드: {stock_code}")
-    token = get_access_token(APPKEY, SECRETKEY)
+    token = fetch_access_token()
     if not token:
         return {"error": "❌ access_token 발급 실패"}
 
@@ -172,8 +179,13 @@ def predict_multi_future_from_api(stock_name):
         result["주의사항"] = warning
     return result
 
-# Flask 서버 실행
+# ───────────────────────────────────────────────
+# Flask 서버
 app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "✅ 주가 예측: /predict?stock=삼성전자"
 
 @app.route('/predict', methods=['GET'])
 def predict():
@@ -183,6 +195,14 @@ def predict():
     result = predict_multi_future_from_api(stock_name)
     return jsonify(result)
 
+@app.route('/get_token', methods=['GET'])
+def get_token():
+    token = fetch_access_token()
+    if token:
+        return jsonify({"access_token": token})
+    return jsonify({"error": "❌ 토큰 발급 실패"}), 500
+
+# ───────────────────────────────────────────────
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
 
