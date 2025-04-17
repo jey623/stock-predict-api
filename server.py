@@ -1,4 +1,5 @@
 import os
+import time  # ✅ 토큰 만료시간 계산을 위한 time 추가
 import requests
 import json
 import pandas as pd
@@ -10,23 +11,21 @@ from flask import Flask, request, jsonify
 import warnings
 warnings.filterwarnings("ignore")
 
-# 🔑 환경변수에서 APPKEY / SECRETKEY 불러오기
-APPKEY = os.environ.get("APPKEY")
-SECRETKEY = os.environ.get("SECRETKEY")
+# 🔑 환경변수에서 키 불러오기
+APPKEY = os.getenv("APPKEY")
+SECRETKEY = os.getenv("SECRETKEY")
 
-# ───────────────────────────────────────────────
-# ✅ access_token 자동 발급/갱신
 ACCESS_TOKEN = None
-TOKEN_EXPIRES_AT = 0  # epoch time
+TOKEN_EXPIRES_AT = 0
 
+# ✅ access_token 자동 발급 및 갱신
 def fetch_access_token():
     global ACCESS_TOKEN, TOKEN_EXPIRES_AT
 
-    # 1시간 유효 / 60초 전이면 새로 발급
     if ACCESS_TOKEN and time.time() < TOKEN_EXPIRES_AT - 60:
         return ACCESS_TOKEN
 
-    url = 'https://api.kiwoom.com/oauth2/token'
+    url = "https://api.kiwoom.com/oauth2/token"
     headers = {"Content-Type": "application/json;charset=UTF-8"}
     data = {
         "grant_type": "client_credentials",
@@ -45,8 +44,7 @@ def fetch_access_token():
     print("❌ access_token 발급 실패:", res.status_code, res.text)
     return None
 
-# ───────────────────────────────────────────────
-# 종목명 → 종목코드 (네이버 금융 크롤링)
+# 종목명 → 종목코드
 def get_stock_code_from_name(name):
     try:
         search_url = f"https://finance.naver.com/search/search.naver?query={name}"
@@ -62,7 +60,6 @@ def get_stock_code_from_name(name):
         print(f"❌ 종목코드 검색 오류: {e}")
     return None
 
-# ───────────────────────────────────────────────
 # 일봉 데이터 요청
 def get_daily_price_data(token, stock_code, qry_dt, start_date):
     url = "https://api.kiwoom.com/api/dostk/mrkcond"
@@ -95,7 +92,6 @@ def get_daily_price_data(token, stock_code, qry_dt, start_date):
             print("❌ 데이터 파싱 실패:", e)
     return pd.DataFrame()
 
-# ───────────────────────────────────────────────
 # 과거 데이터 수집
 def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
     all_data = pd.DataFrame()
@@ -119,7 +115,6 @@ def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
     print(f"📦 최종 불러온 일봉 데이터 수: {len(all_data)}개")
     return all_data
 
-# ───────────────────────────────────────────────
 # 예측 모델 (XGBoost)
 def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
     df = df.copy()
@@ -142,7 +137,6 @@ def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
         result[day] = pred
     return result, df["Close"].iloc[-1]
 
-# ───────────────────────────────────────────────
 # 전체 예측 흐름
 def predict_multi_future_from_api(stock_name):
     stock_code = get_stock_code_from_name(stock_name)
@@ -179,7 +173,7 @@ def predict_multi_future_from_api(stock_name):
         result["주의사항"] = warning
     return result
 
-# ───────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # Flask 서버
 app = Flask(__name__)
 
@@ -202,7 +196,7 @@ def get_token():
         return jsonify({"access_token": token})
     return jsonify({"error": "❌ 토큰 발급 실패"}), 500
 
-# ───────────────────────────────────────────────
+# ─────────────────────────────────────────────
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
 
