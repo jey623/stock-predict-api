@@ -1,5 +1,5 @@
 import os
-import time  # ✅ 토큰 만료시간 계산을 위한 time 추가
+import time
 import requests
 import json
 import pandas as pd
@@ -11,14 +11,13 @@ from flask import Flask, request, jsonify
 import warnings
 warnings.filterwarnings("ignore")
 
-# 🔑 환경변수에서 키 불러오기
 APPKEY = os.getenv("APPKEY")
 SECRETKEY = os.getenv("SECRETKEY")
 
 ACCESS_TOKEN = None
 TOKEN_EXPIRES_AT = 0
 
-# ✅ access_token 자동 발급 및 갱신
+# 🔄 access_token 자동 발급 및 갱신
 def fetch_access_token():
     global ACCESS_TOKEN, TOKEN_EXPIRES_AT
 
@@ -44,23 +43,36 @@ def fetch_access_token():
     print("❌ access_token 발급 실패:", res.status_code, res.text)
     return None
 
-# 종목명 → 종목코드
+# 🧠 종목코드 사전 백업
+TICKER_DICT = {
+    "삼성전자": "005930",
+    "펄어비스": "263750",
+    "카카오게임즈": "293490"
+}
+
+# 🔍 종목명 → 종목코드 (크롤링 + 백업)
 def get_stock_code_from_name(name):
     try:
         search_url = f"https://finance.naver.com/search/search.naver?query={name}"
         headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(search_url, headers=headers)
+        res = requests.get(search_url, headers=headers, timeout=5)
+        if res.status_code != 200:
+            raise Exception(f"응답 코드: {res.status_code}")
         soup = BeautifulSoup(res.text, 'html.parser')
         link = soup.select_one('a.tltle')
         if link and 'stock.naver.com' not in link['href']:
             code = link['href'].split('=')[-1]
-            print(f"🔎 종목코드 자동 검색 성공: {name} → {code}")
+            print(f"🔎 종목코드 크롤링 성공: {name} → {code}")
             return code
     except Exception as e:
-        print(f"❌ 종목코드 검색 오류: {e}")
+        print(f"⚠️ 크롤링 실패: {e}")
+    # fallback
+    if name in TICKER_DICT:
+        print(f"📦 백업코드 사용: {name} → {TICKER_DICT[name]}")
+        return TICKER_DICT[name]
     return None
 
-# 일봉 데이터 요청
+# 📊 일봉 데이터 조회
 def get_daily_price_data(token, stock_code, qry_dt, start_date):
     url = "https://api.kiwoom.com/api/dostk/mrkcond"
     headers = {
@@ -92,7 +104,7 @@ def get_daily_price_data(token, stock_code, qry_dt, start_date):
             print("❌ 데이터 파싱 실패:", e)
     return pd.DataFrame()
 
-# 과거 데이터 수집
+# 📦 과거 데이터 수집
 def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
     all_data = pd.DataFrame()
     current_qry_dt = datetime.now()
@@ -104,7 +116,6 @@ def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
         print(f"📅 데이터 요청: qry_dt={qry_dt_str}, start_dt={start_date}")
         df_partial = get_daily_price_data(token, stock_code, qry_dt_str, start_date)
         if df_partial.empty:
-            print("❌ 추가 데이터 없음")
             break
         all_data = pd.concat([df_partial, all_data]).drop_duplicates(subset="Date")
         all_data.sort_values("Date", inplace=True)
@@ -112,10 +123,9 @@ def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
         if not all_data.empty:
             current_qry_dt = all_data["Date"].min() - timedelta(days=1)
 
-    print(f"📦 최종 불러온 일봉 데이터 수: {len(all_data)}개")
     return all_data
 
-# 예측 모델 (XGBoost)
+# 📈 예측
 def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
     df = df.copy()
     df["Return"] = df["Close"].pct_change()
@@ -137,13 +147,12 @@ def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
         result[day] = pred
     return result, df["Close"].iloc[-1]
 
-# 전체 예측 흐름
+# 🔮 예측 파이프라인
 def predict_multi_future_from_api(stock_name):
     stock_code = get_stock_code_from_name(stock_name)
     if not stock_code:
         return {"error": f"❌ 종목 코드 검색 실패: {stock_name}"}
 
-    print(f"\n🔎 종목명: {stock_name}, 종목코드: {stock_code}")
     token = fetch_access_token()
     if not token:
         return {"error": "❌ access_token 발급 실패"}
@@ -173,15 +182,14 @@ def predict_multi_future_from_api(stock_name):
         result["주의사항"] = warning
     return result
 
-# ─────────────────────────────────────────────
-# Flask 서버
+# 🌐 Flask API
 app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return "✅ 주가 예측: /predict?stock=삼성전자"
+    return "✅ /predict?stock=삼성전자 또는 /get_token 호출하세요"
 
-@app.route('/predict', methods=['GET'])
+@app.route('/predict')
 def predict():
     stock_name = request.args.get('stock')
     if not stock_name:
@@ -189,14 +197,14 @@ def predict():
     result = predict_multi_future_from_api(stock_name)
     return jsonify(result)
 
-@app.route('/get_token', methods=['GET'])
+@app.route('/get_token')
 def get_token():
     token = fetch_access_token()
     if token:
         return jsonify({"access_token": token})
     return jsonify({"error": "❌ 토큰 발급 실패"}), 500
 
-# ─────────────────────────────────────────────
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
+
 
