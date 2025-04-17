@@ -19,6 +19,9 @@ TOKEN_EXPIRES_AT = 0
 
 # 🔄 access_token 자동 발급 및 갱신
 def fetch_access_token():
+    print(f"🛠️ APPKEY: {APPKEY[:8]}******")
+    print(f"🛠️ SECRETKEY: {SECRETKEY[:8]}******")
+
     global ACCESS_TOKEN, TOKEN_EXPIRES_AT
 
     if ACCESS_TOKEN and time.time() < TOKEN_EXPIRES_AT - 60:
@@ -39,18 +42,17 @@ def fetch_access_token():
         ACCESS_TOKEN = token
         TOKEN_EXPIRES_AT = time.time() + expires_in
         print("✅ access_token 발급 성공")
-        return ACCESS_TOKEN
+        return token
+
     print("❌ access_token 발급 실패:", res.status_code, res.text)
     return None
 
-# 🧠 종목코드 사전 백업
 TICKER_DICT = {
     "삼성전자": "005930",
     "펄어비스": "263750",
     "카카오게임즈": "293490"
 }
 
-# 🔍 종목명 → 종목코드 (크롤링 + 백업)
 def get_stock_code_from_name(name):
     try:
         search_url = f"https://finance.naver.com/search/search.naver?query={name}"
@@ -66,13 +68,11 @@ def get_stock_code_from_name(name):
             return code
     except Exception as e:
         print(f"⚠️ 크롤링 실패: {e}")
-    # fallback
     if name in TICKER_DICT:
         print(f"📦 백업코드 사용: {name} → {TICKER_DICT[name]}")
         return TICKER_DICT[name]
     return None
 
-# 📊 일봉 데이터 조회
 def get_daily_price_data(token, stock_code, qry_dt, start_date):
     url = "https://api.kiwoom.com/api/dostk/mrkcond"
     headers = {
@@ -104,7 +104,6 @@ def get_daily_price_data(token, stock_code, qry_dt, start_date):
             print("❌ 데이터 파싱 실패:", e)
     return pd.DataFrame()
 
-# 📦 과거 데이터 수집
 def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
     all_data = pd.DataFrame()
     current_qry_dt = datetime.now()
@@ -125,7 +124,6 @@ def get_historical_price_data(token, stock_code, min_days=100, max_iter=10):
 
     return all_data
 
-# 📈 예측
 def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
     df = df.copy()
     df["Return"] = df["Close"].pct_change()
@@ -147,7 +145,6 @@ def multi_day_prediction(df, future_days=[1, 5, 20, 40, 60]):
         result[day] = pred
     return result, df["Close"].iloc[-1]
 
-# 🔮 예측 파이프라인
 def predict_multi_future_from_api(stock_name):
     stock_code = get_stock_code_from_name(stock_name)
     if not stock_code:
@@ -182,7 +179,6 @@ def predict_multi_future_from_api(stock_name):
         result["주의사항"] = warning
     return result
 
-# 🌐 Flask API
 app = Flask(__name__)
 
 @app.route('/')
