@@ -1,0 +1,8 @@
+flask
+ta
+pandas
+numpy
+FinanceDataReader
+requests
+xgboost
+beautifulsoup4
