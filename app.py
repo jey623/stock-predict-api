@@ -57,5 +57,7 @@ def get_indicators():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ✅ Render용 포트 설정 추가
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=10000, debug=True)
+
