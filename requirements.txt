@@ -2,7 +2,4 @@ flask
 ta
 pandas
 numpy
-FinanceDataReader
-requests
-xgboost
-beautifulsoup4
+git+https://github.com/FinanceData/FinanceDataReader.git
