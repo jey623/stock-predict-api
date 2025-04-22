@@ -1,146 +1,121 @@
 import os
+import json
 import pandas as pd
 import numpy as np
-import FinanceDataReader as fdr
+import tensorflow as tf
 from flask import Flask, request, jsonify
-from ta.trend import MACD, SMAIndicator
+from sklearn.preprocessing import MinMaxScaler
+from ta.trend import MACD, ADXIndicator
 from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands
-from ta.trend import ADXIndicator
-from ta.trend import CCIIndicator
-from ta.trend import PSARIndicator
-from ta.trend import EMAIndicator
-from ta.trend import WMAIndicator
-from ta.trend import STCIndicator
-from ta.trend import KSTIndicator
-from ta.trend import DPOIndicator
-from ta.trend import VortexIndicator
-from ta.trend import IchimokuIndicator
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+import FinanceDataReader as fdr
 
 app = Flask(__name__)
 
-def get_stock_data(stock_code):
-    df = fdr.DataReader(stock_code, start='2014-01-01')
-    df = df.dropna()
-    return df
+def get_stock_code(name_or_code):
+    stock_list = fdr.StockListing('KRX')
+    if name_or_code.isdigit():
+        return name_or_code
+    row = stock_list[stock_list['Name'] == name_or_code]
+    if not row.empty:
+        return row.iloc[0]['Code']
+    else:
+        return None
 
-def add_indicators(df):
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['MA40'] = df['Close'].rolling(window=40).mean()
-    df['MA60'] = df['Close'].rolling(window=60).mean()
-    df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
-    macd = MACD(close=df['Close'])
-    df['MACD'] = macd.macd_diff()
-    bb = BollingerBands(close=df['Close'], window=20, window_dev=2)
-    df['Bollinger_High'] = bb.bollinger_hband()
-    df['Bollinger_Low'] = bb.bollinger_lband()
-    df['Envelope_High'] = df['MA20'] * 1.02
-    df['Envelope_Low'] = df['MA20'] * 0.98
-    adx = ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=14)
-    df['ADX'] = adx.adx()
-    df['+DI'] = adx.adx_pos()
-    df['-DI'] = adx.adx_neg()
-    df['TSF'] = df['Close'].rolling(window=5).mean()  # 간이 TSF 흉내
-    return df
+def get_stock_name(code):
+    stock_list = fdr.StockListing('KRX')
+    row = stock_list[stock_list['Code'] == code]
+    if not row.empty:
+        return row.iloc[0]['Name']
+    else:
+        return code
 
-def create_lstm_model(input_shape):
-    model = Sequential()
-    model.add(LSTM(64, input_shape=input_shape))
-    model.add(Dense(1))
-    model.compile(optimizer='adam', loss='mse')
-    return model
+def get_technical_indicators(df):
+    indicators = {}
+    indicators["MA20"] = df["Close"].rolling(window=20).mean()
+    indicators["MA40"] = df["Close"].rolling(window=40).mean()
+    indicators["MA60"] = df["Close"].rolling(window=60).mean()
 
-def predict_future_prices(df, days_list):
-    df = add_indicators(df)
-    df = df.dropna()
+    macd = MACD(close=df["Close"])
+    indicators["MACD"] = macd.macd()
+    indicators["Signal"] = macd.macd_signal()
 
-    features = ['Close', 'MA20', 'MA40', 'MA60', 'RSI', 'MACD', 'Bollinger_High',
-                'Bollinger_Low', 'Envelope_High', 'Envelope_Low', 'ADX', '+DI', '-DI', 'TSF']
+    rsi = RSIIndicator(close=df["Close"], window=14)
+    indicators["RSI"] = rsi.rsi()
 
+    boll = BollingerBands(close=df["Close"], window=20)
+    indicators["Bollinger_High"] = boll.bollinger_hband()
+    indicators["Bollinger_Low"] = boll.bollinger_lband()
+
+    adx = ADXIndicator(high=df["High"], low=df["Low"], close=df["Close"])
+    indicators["+DI"] = adx.adx_pos()
+    indicators["-DI"] = adx.adx_neg()
+    indicators["ADX"] = adx.adx()
+
+    envelope_pct = 0.02
+    indicators["Envelope_High"] = indicators["MA20"] * (1 + envelope_pct)
+    indicators["Envelope_Low"] = indicators["MA20"] * (1 - envelope_pct)
+
+    indicators["TSF"] = df["Close"].rolling(window=10).apply(lambda x: np.poly1d(np.polyfit(range(len(x)), x, 1))(len(x) - 1))
+
+    df_ind = pd.DataFrame(indicators)
+    return df_ind
+
+def make_predictions(data, feature_col, days_ahead=1):
+    dataset = data[feature_col].values.reshape(-1, 1)
     scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(df[features])
-    X = []
-    y = []
+    dataset_scaled = scaler.fit_transform(dataset)
 
-    for i in range(60, len(scaled_data)):
-        X.append(scaled_data[i-60:i])
-        y.append(scaled_data[i][0])
+    X = []
+    for i in range(len(dataset_scaled) - 60 - days_ahead + 1):
+        X.append(dataset_scaled[i:i+60])
 
     X = np.array(X)
-    y = np.array(y)
+    model = tf.keras.models.Sequential([
+        tf.keras.layers.LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
+        tf.keras.layers.LSTM(units=50),
+        tf.keras.layers.Dense(units=1)
+    ])
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.fit(X, dataset_scaled[60+days_ahead-1:], epochs=5, batch_size=32, verbose=0)
 
-    model = create_lstm_model((X.shape[1], X.shape[2]))
-    model.fit(X, y, epochs=10, batch_size=32, verbose=0)
-
-    predictions = {}
-    for days in days_list:
-        future_input = scaled_data[-60:].copy()
-        for _ in range(days):
-            input_seq = np.expand_dims(future_input[-60:], axis=0)
-            pred = model.predict(input_seq, verbose=0)[0][0]
-            next_row = future_input[-1].copy()
-            next_row[0] = pred
-            future_input = np.vstack([future_input, next_row])
-
-        predicted_scaled_price = future_input[-1][0]
-        predicted_price = scaler.inverse_transform([[predicted_scaled_price] + [0]*(len(features)-1)])[0][0]
-        real_price = df['Close'].iloc[-1]  # 실제 현재가
-        predictions[f'{days}일후'] = {
-            '예측가': round(predicted_price, 2),
-            '실제가': round(real_price, 2),
-            '오차': round(abs(real_price - predicted_price), 2)
-        }
-
-    return predictions
+    last_sequence = dataset_scaled[-60:].reshape(1, 60, 1)
+    prediction_scaled = model.predict(last_sequence)
+    prediction = scaler.inverse_transform(prediction_scaled)
+    return float(prediction[0][0])
 
 @app.route('/predict_lstm', methods=['GET'])
 def predict_lstm():
-    stock = request.args.get('stock')
-    try:
-        df = get_stock_data(stock)
-        preds = predict_future_prices(df, [1, 5, 20, 40, 60])
-        return jsonify({
-            '종목명': stock,
-            '종목코드': stock,
-            '예측결과': preds
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)})
+    stock_input = request.args.get('stock')
+    code = get_stock_code(stock_input)
+    if not code:
+        return jsonify({'error': '종목명을 찾을 수 없습니다.'})
 
-@app.route('/get_indicators', methods=['GET'])
-def get_indicators():
-    stock = request.args.get('stock')
-    try:
-        df = get_stock_data(stock)
-        df = add_indicators(df)
-        latest = df.iloc[-1]
-        return jsonify({
-            '종목명': stock,
-            '종목코드': stock,
-            '현재가': round(latest['Close'], 2),
-            '날짜': str(latest.name.date()),
-            'MA20': round(latest['MA20'], 2),
-            'MA40': round(latest['MA40'], 2),
-            'MA60': round(latest['MA60'], 2),
-            'RSI': round(latest['RSI'], 2),
-            'MACD': round(latest['MACD'], 2),
-            'Bollinger_High': round(latest['Bollinger_High'], 2),
-            'Bollinger_Low': round(latest['Bollinger_Low'], 2),
-            'Envelope_High': round(latest['Envelope_High'], 2),
-            'Envelope_Low': round(latest['Envelope_Low'], 2),
-            'ADX': round(latest['ADX'], 2),
-            '+DI': round(latest['+DI'], 2),
-            '-DI': round(latest['-DI'], 2),
-            'TSF': round(latest['TSF'], 2)
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)})
+    df = fdr.DataReader(code, start='2014-01-01')
+    if 'Close' not in df.columns:
+        return jsonify({'error': "'Close' 컬럼이 없습니다."})
 
-# ✅ Render에서 포트 자동 인식되게 아래 설정 필수
+    df = df.dropna()
+    df_ind = get_technical_indicators(df)
+    df = pd.concat([df, df_ind], axis=1).dropna()
+
+    result = {}
+    for days in [1, 2, 5, 10, 20, 40, 60]:  # ✅ 2일 후 예측도 포함됨
+        pred = make_predictions(df, 'Close', days_ahead=days)
+        real = df['Close'].iloc[-1]
+        result[f'{days}일후'] = {
+            '예측가': round(pred, 2),
+            '실제가': round(real, 2),
+            '오차': round(abs(pred - real), 2)
+        }
+
+    return jsonify({
+        '종목명': get_stock_name(code),
+        '종목코드': code,
+        '예측결과': result
+    })
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
-
+    port = int(os.environ.get('PORT', 10000))
+    app.run(debug=True, host='0.0.0.0', port=port)
 
