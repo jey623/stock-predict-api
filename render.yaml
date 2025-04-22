@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: stock-predict-api
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: python app_10years_lstm_server.py
