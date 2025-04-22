@@ -5,3 +5,4 @@ services:
     plan: free
     buildCommand: ""
     startCommand: python app_10years_lstm_server.py
+    pythonVersion: 3.10
