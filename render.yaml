@@ -3,6 +3,12 @@ services:
     name: stock-predict-api
     env: python
     plan: free
-    buildCommand: ""
+
+    # ⬇️  빌드 단계: requirements.txt 설치
+    buildCommand: pip install -r requirements.txt
+
+    # ⬇️  서버 실행 명령 (파일명 꼭 맞추세요!)
     startCommand: python app_10years_lstm_server.py
-    pythonVersion: 3.10
+
+    # ⬇️  Python 버전 고정 (FinanceDataReader 호환)
+    pythonVersion: 3.10.13
