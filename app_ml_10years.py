@@ -1,69 +1,65 @@
+# 📁 app_ml_10years.py
 from flask import Flask, request, jsonify
 import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
-import ta
 import xgboost as xgb
-import os
-from datetime import datetime, timedelta
+from ta.volatility import BollingerBands
+from ta.momentum import RSIIndicator
+from ta.trend import MACD
+import datetime
 
 app = Flask(__name__)
 
-def get_stock_code(name_or_code):
-    try:
-        stock_list = fdr.StockListing('KRX')
-        if name_or_code.isdigit():
-            row = stock_list[stock_list['Code'] == name_or_code]
-        else:
-            row = stock_list[stock_list['Name'] == name_or_code]
-        if not row.empty:
-            return row.iloc[0]['Code'], row.iloc[0]['Name']
-        else:
-            return None, None
-    except:
-        return None, None
-
-def calculate_indicators(df):
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['RSI'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
-    macd = ta.trend.MACD(close=df['Close'])
-    df['MACD'] = macd.macd()
-    df['Signal'] = macd.macd_signal()
-    return df.dropna()
-
-def train_and_predict(df):
-    df = calculate_indicators(df)
-    df['Target'] = df['Close'].shift(-1)
-    df = df.dropna()
-
-    X = df[['MA20', 'RSI', 'MACD', 'Signal']]
-    y = df['Target']
-
-    model = xgb.XGBRegressor()
-    model.fit(X[:-1], y[:-1])  # 마지막은 테스트용
-    prediction = model.predict(X[-1:].values)[0]
-    return round(prediction, 2), int(df['Close'].iloc[-1])
-
-@app.route("/predict", methods=["GET"])
+@app.route('/predict', methods=['GET'])
 def predict():
-    stock = request.args.get("stock")
-    code, name = get_stock_code(stock)
-    if not code:
-        return jsonify({"error": "Invalid stock name or code."}), 400
+    stock = request.args.get('stock')  # 예: '삼성전자'
 
-    start_date = (datetime.today() - timedelta(days=365 * 10)).strftime('%Y-%m-%d')
-    df = fdr.DataReader(code, start=start_date)
+    try:
+        # 종목코드 자동 변환
+        code_df = fdr.StockListing('KRX')
+        row = code_df[code_df['Name'] == stock]
+        if row.empty:
+            return jsonify({'error': f'{stock} 종목명을 찾을 수 없습니다.'}), 400
 
-    pred_price, current_price = train_and_predict(df)
-    return jsonify({
-        "종목명": name,
-        "종목코드": code,
-        "현재가": current_price,
-        "내일 예측가": pred_price,
-        "예상 변동": f"{round(pred_price - current_price, 2)}원"
-    })
+        code = row.iloc[0]['Code']
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+        # 10년치 데이터 수집
+        end = datetime.datetime.today()
+        start = end - datetime.timedelta(days=365*10)
+        df = fdr.DataReader(code, start, end)
 
+        # 기술적 지표 추가
+        df['MA20'] = df['Close'].rolling(window=20).mean()
+        df['MA60'] = df['Close'].rolling(window=60).mean()
+        df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
+        macd = MACD(close=df['Close'])
+        df['MACD'] = macd.macd()
+        df['Signal'] = macd.macd_signal()
+
+        df = df.dropna()
+
+        # 특성(X), 레이블(y) 준비
+        X = df[['MA20', 'MA60', 'RSI', 'MACD', 'Signal']].values
+        y = df['Close'].shift(-1).dropna().values[:-1]
+        X = X[:-1]
+
+        model = xgb.XGBRegressor()
+        model.fit(X, y)
+
+        last_data = df[['MA20', 'MA60', 'RSI', 'MACD', 'Signal']].iloc[-1].values.reshape(1, -1)
+        predicted_price = model.predict(last_data)[0]
+        current_price = df['Close'].iloc[-1]
+
+        return jsonify({
+            '종목명': stock,
+            '현재가': round(current_price, 2),
+            '다음날 예측가': round(predicted_price, 2),
+            '예상 상승률(%)': round((predicted_price - current_price) / current_price * 100, 2)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    app.run()
