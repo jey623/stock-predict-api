@@ -2,4 +2,6 @@ flask
 ta
 pandas
 numpy
-git+https://github.com/FinanceData/FinanceDataReader.git
+FinanceDataReader
+requests
+tensorflow
