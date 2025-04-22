@@ -3,5 +3,6 @@ ta
 pandas
 numpy
 xgboost
+scikit-learn
 finance-datareader==0.9.96
 gunicorn
