@@ -1,65 +1,80 @@
-# 📁 app_ml_10years.py
 from flask import Flask, request, jsonify
-import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
-import xgboost as xgb
-from ta.volatility import BollingerBands
-from ta.momentum import RSIIndicator
-from ta.trend import MACD
+import FinanceDataReader as fdr
+from xgboost import XGBRegressor
 import datetime
 
 app = Flask(__name__)
 
-@app.route('/predict', methods=['GET'])
-def predict():
-    stock = request.args.get('stock')  # 예: '삼성전자'
+PREDICT_DAYS = [1, 2, 5, 10, 20, 40, 60, 80]
 
+def get_stock_code(name_or_code):
     try:
-        # 종목코드 자동 변환
-        code_df = fdr.StockListing('KRX')
-        row = code_df[code_df['Name'] == stock]
-        if row.empty:
-            return jsonify({'error': f'{stock} 종목명을 찾을 수 없습니다.'}), 400
+        df_krx = fdr.StockListing('KRX')
+        match = df_krx[df_krx['Name'] == name_or_code]
+        if match.empty:
+            match = df_krx[df_krx['Code'] == name_or_code]
+        if not match.empty:
+            return match.iloc[0]['Code'], match.iloc[0]['Name']
+        return None, None
+    except:
+        return None, None
 
-        code = row.iloc[0]['Code']
+def fetch_data(code):
+    today = datetime.datetime.today()
+    past = today - datetime.timedelta(days=365 * 10)
+    df = fdr.DataReader(code, past.strftime('%Y-%m-%d'))
+    return df.dropna()
 
-        # 10년치 데이터 수집
-        end = datetime.datetime.today()
-        start = end - datetime.timedelta(days=365*10)
-        df = fdr.DataReader(code, start, end)
+def create_features_targets(df, days):
+    X, y = [], []
+    for i in range(len(df) - max(days)):
+        features = df['Close'].values[i:i+60]  # 최근 60일 종가 사용
+        if len(features) < 60:
+            continue
+        for d in days:
+            target_index = i + 60 + d - 1
+            if target_index < len(df):
+                X.append(features)
+                y.append(df['Close'].values[target_index])
+    return np.array(X), np.array(y)
 
-        # 기술적 지표 추가
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        df['MA60'] = df['Close'].rolling(window=60).mean()
-        df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
-        macd = MACD(close=df['Close'])
-        df['MACD'] = macd.macd()
-        df['Signal'] = macd.macd_signal()
+@app.route("/")
+def home():
+    return "XGBoost 10년치 머신러닝 주가 예측 서버"
 
-        df = df.dropna()
+@app.route("/predict", methods=["GET"])
+def predict():
+    stock = request.args.get("stock")
+    if not stock:
+        return jsonify({"error": "Missing 'stock' parameter"}), 400
 
-        # 특성(X), 레이블(y) 준비
-        X = df[['MA20', 'MA60', 'RSI', 'MACD', 'Signal']].values
-        y = df['Close'].shift(-1).dropna().values[:-1]
-        X = X[:-1]
+    code, name = get_stock_code(stock)
+    if not code:
+        return jsonify({"error": f"{stock} 종목명을 찾을 수 없습니다."}), 400
 
-        model = xgb.XGBRegressor()
-        model.fit(X, y)
+    df = fetch_data(code)
+    if len(df) < 500:
+        return jsonify({"error": f"데이터가 충분하지 않습니다 ({len(df)}일치)."})
 
-        last_data = df[['MA20', 'MA60', 'RSI', 'MACD', 'Signal']].iloc[-1].values.reshape(1, -1)
-        predicted_price = model.predict(last_data)[0]
-        current_price = df['Close'].iloc[-1]
+    X, y = create_features_targets(df, PREDICT_DAYS)
+    if X.shape[0] == 0:
+        return jsonify({"error": "학습할 수 있는 데이터가 없습니다."})
 
-        return jsonify({
-            '종목명': stock,
-            '현재가': round(current_price, 2),
-            '다음날 예측가': round(predicted_price, 2),
-            '예상 상승률(%)': round((predicted_price - current_price) / current_price * 100, 2)
-        })
+    model = XGBRegressor(n_estimators=100, random_state=42)
+    model.fit(X, y)
 
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    recent_60 = df['Close'].values[-60:]
+    pred_input = recent_60.reshape(1, -1)
+    prediction = model.predict(pred_input)[0]
 
-if __name__ == '__main__':
-    app.run()
+    results = {
+        "종목명": f"{name} ({code})",
+        "예측일자": PREDICT_DAYS,
+        "예측종가": float(round(prediction, 2))
+    }
+    return jsonify(results)
+
+if __name__ == "__main__":
+    app.run(debug=True)
