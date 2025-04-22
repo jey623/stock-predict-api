@@ -2,7 +2,7 @@ flask
 ta
 pandas
 numpy
-finance-datareader==0.9.96
-requests
-tensorflow
 scikit-learn
+tensorflow
+finance-datareader==0.9.96
+gunicorn 
