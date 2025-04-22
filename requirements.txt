@@ -2,6 +2,6 @@ flask
 ta
 pandas
 numpy
-FinanceDataReader
+finance-datareader==0.9.96   ← 수정
 requests
 tensorflow
