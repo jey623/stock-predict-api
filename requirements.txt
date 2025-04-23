@@ -1,8 +1,6 @@
 flask
+gunicorn
 ta
 pandas
 numpy
-xgboost
 finance-datareader==0.9.96
-gunicorn
-scikit-learn
