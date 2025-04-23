@@ -1,74 +1,89 @@
 from flask import Flask, request, jsonify
+import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import FinanceDataReader as fdr
 import xgboost as xgb
+from ta import add_all_ta_features
 import traceback
 
 app = Flask(__name__)
 
-@app.route('/predict', methods=['GET'])
+# 종목명 → 종목코드 매핑 (필요 시 확장 가능)
+name_to_code = {
+    "삼성전자": "005930",
+    "카카오": "035720",
+    "NAVER": "035420",
+    "LG전자": "066570",
+    "SK하이닉스": "000660",
+    # 추가 가능
+}
+
+# 사용되는 기술적 지표 feature 리스트 (입력 피처 선정)
+feature_cols = [
+    'volume',
+    'open',
+    'high',
+    'low',
+    'close',
+    'trend_macd', 'trend_macd_signal',
+    'momentum_rsi', 'trend_adx', 'trend_adx_pos', 'trend_adx_neg',
+    'volatility_bbm', 'volatility_bbh', 'volatility_bbl',
+    'trend_visual_indicator',
+]
+
+@app.route("/predict")
 def predict():
     try:
-        stock_code = request.args.get('stock')
-        if not stock_code:
-            return jsonify({"error": "No stock code provided"}), 400
+        stock_input = request.args.get("stock")
+        stock_code = name_to_code.get(stock_input, stock_input)  # 한글 입력 시 코드로 변환
 
         print(f"✅ [1] 입력된 종목코드: {stock_code}")
 
-        # 5년치 데이터만 수집
-        today = datetime.today()
-        start_date = today - timedelta(days=365 * 5)
-        df = fdr.DataReader(stock_code, start_date, today)
+        # 5년치 주가 데이터 수집
+        df = fdr.DataReader(stock_code)
+        df = df[-(252 * 5):]  # 5년치 (영업일 기준 252일 * 5)
         print(f"✅ [2] 데이터 수집 완료. 총 행 수: {len(df)}")
 
         # 기술적 지표 계산
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        df['MA60'] = df['Close'].rolling(window=60).mean()
-        df['RSI'] = compute_rsi(df['Close'])
-        df = df.dropna()
+        df = add_all_ta_features(
+            df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True
+        )
+
+        df.columns = df.columns.str.lower()
+        df.rename(columns={'close': 'close'}, inplace=True)
+        df.dropna(inplace=True)
         print(f"✅ [3] 기술적 지표 적용 및 결측 제거 완료. 사용 행 수: {len(df)}")
 
-        # 예측에 사용할 피처 설정
-        feature_cols = ['Close', 'MA20', 'MA60', 'RSI']
+        # 예측용 데이터 구성
         X = []
         for i in range(len(df) - 1):
-            X.append(df[feature_cols].iloc[i].values)
+            try:
+                X.append(df[feature_cols].iloc[i].values)
+            except Exception as e:
+                print("⚠️ 행 스킵 -", i, e)
+                continue
         X = np.array(X)
 
-        # 타겟 (다음날 종가)
-        y = df['Close'].shift(-1).dropna().values
+        # 마지막 입력값 예측
+        model = xgb.XGBRegressor()
+        model.fit(X[:-1], df['close'].iloc[1:len(X)])
+        prediction = model.predict(X[-1].reshape(1, -1))[0]
 
-        # 모델 학습 및 예측
-        model = xgb.XGBRegressor(n_estimators=100)
-        model.fit(X, y)
-        y_pred = model.predict(X)
+        current_price = df['close'].iloc[-1]
+        print(f"✅ [4] 현재가: {current_price}, 예측가: {prediction}")
 
-        # 마지막 예측 결과 반환
-        result = {
-            "stock": stock_code,
-            "last_close": float(df['Close'].iloc[-2]),
-            "predicted_close": float(y_pred[-1]),
-            "expected_return(%)": round(((y_pred[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100, 2)
-        }
-        return jsonify(result)
+        return jsonify({
+            "종목코드": stock_code,
+            "현재가": round(current_price, 2),
+            "예측가": round(float(prediction), 2),
+            "예상수익률(%)": round(((prediction - current_price) / current_price) * 100, 2)
+        })
 
     except Exception as e:
-        print("❌ 예측 중 오류 발생:")
+        print("❌ 예외 발생:", e)
         traceback.print_exc()
         return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
 if __name__ == '__main__':
-    app.run(debug=True)
-
+    app.run(host="0.0.0.0", port=10000)
 
