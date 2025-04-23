@@ -23,14 +23,17 @@ def predict():
     try:
         stock_code = request.args.get('stock')
         print("✅ [1] 입력된 종목코드:", stock_code)
+
         if not stock_code:
-            raise ValueError("stock 파라미터가 없습니다. 예: /predict?stock=005930")
+            raise ValueError("❌ 'stock' 파라미터가 필요합니다. 예: /predict?stock=005930")
 
         df = fdr.DataReader(stock_code)
-        print("✅ [2] 데이터 수집 완료. 전체 행 수:", len(df))
+        print("✅ [2] 데이터 수집 완료. 총 행 수:", len(df))
 
-        df = df.tail(2520)  # 10년 기준
+        df = df.tail(2520)  # 10년치 기준
         df = df[['Close']].copy()
+
+        # 기술적 지표 계산
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA60'] = df['Close'].rolling(window=60).mean()
         df['RSI'] = RSIIndicator(close=df['Close']).rsi()
@@ -43,7 +46,7 @@ def predict():
         df['BB_low'] = bb.bollinger_lband()
 
         df.dropna(inplace=True)
-        print("✅ [3] 기술적 지표 계산 및 결측 제거 완료. 사용 가능 행 수:", len(df))
+        print("✅ [3] 기술적 지표 적용 및 결측 제거 완료. 사용 행 수:", len(df))
 
         feature_cols = ['Close', 'MA20', 'MA60', 'RSI', 'MACD', 'MACD_signal', 'CCI', 'BB_high', 'BB_low']
         X, y = [], []
@@ -56,21 +59,21 @@ def predict():
 
         X = np.array(X)
         y = np.array(y)
-        print(f"✅ [4] 학습 데이터 준비 완료. X: {X.shape}, y: {y.shape}")
+        print(f"✅ [4] 학습 데이터 생성 완료. X: {X.shape}, y: {y.shape}")
 
         if len(X) == 0 or len(y) == 0:
-            raise ValueError("학습에 사용할 수 있는 데이터가 부족합니다.")
+            raise ValueError("❌ 학습 데이터가 부족합니다. 더 긴 기간의 데이터가 필요합니다.")
 
         model = xgb.XGBRegressor()
         model.fit(X, y)
-        print("✅ [5] XGBoost 모델 학습 완료")
+        print("✅ [5] 모델 학습 완료")
 
         y_pred = model.predict(X)
         mae = round(mean_absolute_error(y, y_pred), 2)
         mse = round(mean_squared_error(y, y_pred), 2)
         rmse = round(np.sqrt(mse), 2)
         r2 = round(r2_score(y, y_pred), 4)
-        print(f"✅ [6] 예측 및 평가 완료. MAE={mae}, RMSE={rmse}, R2={r2}")
+        print(f"✅ [6] 성능 평가 완료. MAE: {mae}, RMSE: {rmse}, R2: {r2}")
 
         last_data = df[feature_cols].iloc[-1].values.reshape(1, -1)
         future_preds = model.predict(last_data)[0]
@@ -91,7 +94,10 @@ def predict():
     except Exception as e:
         tb = traceback.format_exc()
         print("❌ [Error 발생]:\n" + tb)
-        return jsonify({"error": str(e), "traceback": tb})
+        return jsonify({
+            "error": str(e),
+            "traceback": tb
+        })
 
 
 
