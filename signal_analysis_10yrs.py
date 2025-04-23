@@ -1,59 +1,81 @@
 import pandas as pd
-import numpy as np
 import FinanceDataReader as fdr
 import ta
-
-# ✅ 10년치 주가 데이터
-df = fdr.DataReader('005930', start='2014-01-01')
-
-# ✅ 이동평균선
-df['MA5'] = df['Close'].rolling(window=5).mean()
-df['MA10'] = df['Close'].rolling(window=10).mean()
-df['MA20'] = df['Close'].rolling(window=20).mean()
-df['MA40'] = df['Close'].rolling(window=40).mean()
-df['MA60'] = df['Close'].rolling(window=60).mean()
-
-# ✅ 볼린저밴드
-bb = ta.volatility.BollingerBands(close=df['Close'], window=20, window_dev=2)
-df['BB_MID'] = bb.bollinger_mavg()
-df['BB_UPPER'] = bb.bollinger_hband()
-df['BB_LOWER'] = bb.bollinger_lband()
-
-# ✅ 엔벨로프 (기본 ±1%)
-df['Envelope_Upper'] = df['Close'] * 1.01
-df['Envelope_Lower'] = df['Close'] * 0.99
-
-# ✅ TSF: EMA로 근사 (window=5)
-df['TSF'] = ta.trend.EMAIndicator(close=df['Close'], window=5).ema_indicator()
-
-# ✅ DMI/ADX
-adx = ta.trend.ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=17)
-df['+DI'] = adx.adx_pos()
-df['-DI'] = adx.adx_neg()
-df['ADX'] = adx.adx()
-
-# ✅ CCI & RSI
-df['CCI'] = ta.trend.CCIIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=9).cci()
-df['RSI'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
-
-# ✅ EnvelopeDown 20,12 계산 및 신호검색 조건 정의
-envelope_down = df['MA20'] * (1 - 0.012)
-df['Signal_Triggered'] = (
-    (df['CCI'] < -100) &
-    (df['RSI'] < 30) &
-    (df['-DI'] > 41) &
-    ((df['-DI'] < df['ADX']) | (df['+DI'] < 5)) &
-    (envelope_down.rolling(window=5).min() > df['Close'].rolling(window=5).min())
-)
-
-# ✅ 결과 출력
-latest = df.iloc[-1]
-result = {
-    "종목명": "삼성전자",
-    "종목코드": "005930",
-    "현재가": float(latest['Close']),
-    "신호발생": bool(latest['Signal_Triggered'])
-}
+import numpy as np
 import json
-print(json.dumps(result, ensure_ascii=False, indent=2))
+import sys
+import os
+
+# 종목코드 입력받기 (기본: 삼성전자)
+stock_code = sys.argv[1] if len(sys.argv) > 1 else "005930"
+
+# 종목명 매핑 (간단 dict 예시. 필요시 확장)
+code_name_map = {
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "035420": "NAVER",
+    "373220": "LG에너지솔루션",
+    "207940": "삼성바이오로직스"
+}
+stock_name = code_name_map.get(stock_code, "알 수 없음")
+
+try:
+    # ✅ 10년치 데이터 불러오기
+    df = fdr.DataReader(stock_code, start="2014-01-01")
+    
+    # ✅ 기술적 지표
+    df["MA5"] = df["Close"].rolling(5).mean()
+    df["MA10"] = df["Close"].rolling(10).mean()
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["MA40"] = df["Close"].rolling(40).mean()
+    df["MA60"] = df["Close"].rolling(60).mean()
+
+    bb = ta.volatility.BollingerBands(close=df["Close"], window=20, window_dev=2)
+    df["BB_MID"] = bb.bollinger_mavg()
+    df["BB_UPPER"] = bb.bollinger_hband()
+    df["BB_LOWER"] = bb.bollinger_lband()
+
+    df["Envelope_Upper"] = df["MA20"] * 1.03
+    df["Envelope_Lower"] = df["MA20"] * 0.97
+
+    df["TSF"] = df["Close"].ewm(span=5, adjust=False).mean()  # TSF 근사
+
+    adx = ta.trend.ADXIndicator(high=df["High"], low=df["Low"], close=df["Close"])
+    df["DMI_PLUS"] = adx.adx_pos()
+    df["DMI_MINUS"] = adx.adx_neg()
+    df["ADX"] = adx.adx()
+
+    df["RSI"] = ta.momentum.RSIIndicator(close=df["Close"], window=14).rsi()
+    df["CCI"] = ta.trend.CCIIndicator(high=df["High"], low=df["Low"], close=df["Close"]).cci()
+
+    # ✅ 신호검색 수식 (스크린샷 기반 조건 예시)
+    df["Signal_Triggered"] = (
+        (df["MA5"] > df["MA20"]) &
+        (df["MA5"].shift(1) <= df["MA20"].shift(1)) &
+        (df["RSI"] < 30)
+    )
+
+    df.dropna(inplace=True)
+
+    # ✅ 마지막 데이터 기준
+    latest = df.iloc[-1]
+    signal = bool(latest["Signal_Triggered"])
+    result = {
+        "종목명": stock_name,
+        "종목코드": stock_code,
+        "현재가": float(latest["Close"]),
+        "신호발생": signal
+    }
+
+    # ✅ 출력
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    # ✅ 선택적 CSV 저장
+    if "--save" in sys.argv:
+        output_path = f"signal_{stock_code}.csv"
+        df.to_csv(output_path, index=True)
+        print(f"📁 CSV로 저장됨: {output_path}")
+
+except Exception as e:
+    print("❌ 오류 발생:", str(e))
 
