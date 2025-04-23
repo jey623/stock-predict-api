@@ -4,12 +4,11 @@ import ta
 import numpy as np
 import json
 import sys
-import os
 
-# 종목코드 입력받기 (기본: 삼성전자)
+# 종목코드 입력받기 (기본값: 삼성전자)
 stock_code = sys.argv[1] if len(sys.argv) > 1 else "005930"
 
-# 종목명 매핑 (간단 dict 예시. 필요시 확장)
+# 간단한 종목명 매핑 (필요시 확장 가능)
 code_name_map = {
     "005930": "삼성전자",
     "000660": "SK하이닉스",
@@ -22,8 +21,8 @@ stock_name = code_name_map.get(stock_code, "알 수 없음")
 try:
     # ✅ 10년치 데이터 불러오기
     df = fdr.DataReader(stock_code, start="2014-01-01")
-    
-    # ✅ 기술적 지표
+
+    # ✅ 주요 기술적 지표 계산
     df["MA5"] = df["Close"].rolling(5).mean()
     df["MA10"] = df["Close"].rolling(10).mean()
     df["MA20"] = df["Close"].rolling(20).mean()
@@ -38,7 +37,7 @@ try:
     df["Envelope_Upper"] = df["MA20"] * 1.03
     df["Envelope_Lower"] = df["MA20"] * 0.97
 
-    df["TSF"] = df["Close"].ewm(span=5, adjust=False).mean()  # TSF 근사
+    df["TSF"] = df["Close"].ewm(span=5, adjust=False).mean()  # TSF 근사치
 
     adx = ta.trend.ADXIndicator(high=df["High"], low=df["Low"], close=df["Close"])
     df["DMI_PLUS"] = adx.adx_pos()
@@ -48,7 +47,7 @@ try:
     df["RSI"] = ta.momentum.RSIIndicator(close=df["Close"], window=14).rsi()
     df["CCI"] = ta.trend.CCIIndicator(high=df["High"], low=df["Low"], close=df["Close"]).cci()
 
-    # ✅ 신호검색 수식 (스크린샷 기반 조건 예시)
+    # ✅ 신호검색 조건 적용 (스크린샷 기반 조건 예시)
     df["Signal_Triggered"] = (
         (df["MA5"] > df["MA20"]) &
         (df["MA5"].shift(1) <= df["MA20"].shift(1)) &
@@ -57,9 +56,10 @@ try:
 
     df.dropna(inplace=True)
 
-    # ✅ 마지막 데이터 기준
+    # ✅ 최신 데이터 기준 판단
     latest = df.iloc[-1]
     signal = bool(latest["Signal_Triggered"])
+
     result = {
         "종목명": stock_name,
         "종목코드": stock_code,
@@ -67,14 +67,7 @@ try:
         "신호발생": signal
     }
 
-    # ✅ 출력
     print(json.dumps(result, ensure_ascii=False, indent=2))
-
-    # ✅ 선택적 CSV 저장
-    if "--save" in sys.argv:
-        output_path = f"signal_{stock_code}.csv"
-        df.to_csv(output_path, index=True)
-        print(f"📁 CSV로 저장됨: {output_path}")
 
 except Exception as e:
     print("❌ 오류 발생:", str(e))
