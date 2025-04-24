@@ -2,12 +2,10 @@ import pandas as pd
 import FinanceDataReader as fdr
 import ta
 import numpy as np
-import json
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ✅ 전체 상장 종목 불러오기
 krx = fdr.StockListing('KRX')
 
 def get_code_by_name(name):
@@ -32,7 +30,7 @@ def analyze_stock(input_value):
     df = fdr.DataReader(code, start='2014-01-01')
 
     for window in [5, 10, 20, 40, 60]:
-        df[f'MA{window}'] = df['Close'].rolling(window=window).mean()
+        df[f"MA{window}"] = df['Close'].rolling(window=window).mean()
 
     df['RSI'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
     macd = ta.trend.MACD(close=df['Close'])
@@ -51,23 +49,28 @@ def analyze_stock(input_value):
 
     latest = df.iloc[-1]
     signal = bool(latest['Signal_Triggered'])
-
     current_price = float(latest['Close'])
 
-    future_prices = {
-        "1일": round(current_price * 1.01, 2),
-        "5일": round(current_price * 1.03, 2),
-        "10일": round(current_price * 1.05, 2),
-        "20일": round(current_price * 1.07, 2),
-        "40일": round(current_price * 1.09, 2),
-        "60일": round(current_price * 1.10, 2),
-        "80일": round(current_price * 1.11, 2)
-    }
+    # 실시간 예측가 및 변화율 계산
+    future_prices = {}
+    change_rates = {}
+    periods = [1, 5, 10, 20, 40, 60, 80]
 
-    change_rates = {
-        k: round((v - current_price) / current_price * 100, 2)
-        for k, v in future_prices.items()
-    }
+    for p in periods:
+        returns = []
+        for i in df[df["Signal_Triggered"]].index:
+            future_idx = df.index.get_indexer([i + pd.Timedelta(days=p)], method='nearest')[0]
+            if 0 <= future_idx < len(df):
+                buy = df.loc[i, "Close"]
+                future = df.iloc[future_idx]["Close"]
+                change = (future - buy) / buy * 100
+                returns.append(change)
+
+        if returns:
+            avg_return = round(np.mean(returns), 2)
+            predicted_price = round(current_price * (1 + avg_return / 100), 2)
+            future_prices[f"{p}일"] = predicted_price
+            change_rates[f"{p}일"] = avg_return
 
     return {
         "종목명": name,
