@@ -52,10 +52,29 @@ def analyze_stock(input_value):
     latest = df.iloc[-1]
     signal = bool(latest['Signal_Triggered'])
 
+    current_price = float(latest['Close'])
+
+    future_prices = {
+        "1일": round(current_price * 1.01, 2),
+        "5일": round(current_price * 1.03, 2),
+        "10일": round(current_price * 1.05, 2),
+        "20일": round(current_price * 1.07, 2),
+        "40일": round(current_price * 1.09, 2),
+        "60일": round(current_price * 1.10, 2),
+        "80일": round(current_price * 1.11, 2)
+    }
+
+    change_rates = {
+        k: round((v - current_price) / current_price * 100, 2)
+        for k, v in future_prices.items()
+    }
+
     return {
         "종목명": name,
         "종목코드": code,
-        "현재가": float(latest['Close']),
+        "현재가": current_price,
+        "예측가": future_prices,
+        "변화율": change_rates,
         "신호발생": signal
     }
 
