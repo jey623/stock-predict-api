@@ -12,8 +12,8 @@ def _code2name(code): return krx.loc[krx["Code"] == code, "Name"].squeeze()
 # ────────────────────────── 공통 파라미터 파싱 ──────────────────────────
 def _parse_params(q):
     return dict(
-        hi         = float(q.get("hi", 41)),
-        lo         = float(q.get("lo", 5)),
+        hi         = float(q.get("hi", 41)),   # DI- 임계값
+        lo         = float(q.get("lo", 5)),    # DI+ 임계값
         cci_period = int  (q.get("cci_period", 9)),
         cci_th     = float(q.get("cci_th", -100)),
         rsi_period = int  (q.get("rsi_period", 14)),
@@ -70,8 +70,8 @@ def analyze_stock(symbol, **p):
         "현재가": cur,
         "예측가": pred,
         "변화율": change,
-        "신호발생": bool(df["Signal"].iloc[-1]),
-        "신호발생일자": sig_dates
+        "신호발생": bool(df["Signal"].iloc[-1]),   # 현재 일자 신호 여부
+        "신호발생일자": sig_dates                  # 과거 10년 신호 리스트
     }
 
 # ────────────────────────── Flask 엔드포인트 ──────────────────────────
@@ -88,7 +88,7 @@ def api_analyze():
     data = analyze_stock(symbol, **_parse_params(q))
     return jsonify(data)
 
-# === DEBUG ==========================================================
+# === DEBUG : 단계별 필터링 건수 확인 =================================
 @app.route("/analyze_debug")
 def api_analyze_debug():
     q = request.args
@@ -96,7 +96,6 @@ def api_analyze_debug():
     if not symbol:
         return jsonify({"error": "Need symbol"}), 400
     p = _parse_params(q)
-
     code = symbol if symbol.isdigit() else _name2code(symbol)
     df = fdr.DataReader(code, start="2014-01-01")
 
@@ -133,4 +132,5 @@ def api_analyze_debug():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
