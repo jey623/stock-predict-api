@@ -1,100 +1,76 @@
+from datetime import datetime, timedelta
 import pandas as pd
-import FinanceDataReader as fdr
-import ta
 import numpy as np
+import FinanceDataReader as fdr
+from ta.momentum import RSIIndicator
+from ta.trend import CCIIndicator, ADXIndicator
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-krx = fdr.StockListing('KRX')
+def calculate_technical_indicators(df):
+    df['CCI'] = CCIIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=9).cci()
+    df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
+    adx = ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=17)
+    df['DI+'] = adx.adx_pos()
+    df['DI-'] = adx.adx_neg()
+    df['ADX'] = adx.adx()
 
-def get_code_by_name(name):
-    row = krx[krx['Name'] == name]
-    return row['Code'].values[0] if not row.empty else None
+    envelope_down = df['Close'].rolling(window=20).mean() * (1 - 0.12)
+    df['EnvelopeDown'] = envelope_down
+    df['LowestEnvelope'] = envelope_down.rolling(window=5).min()
+    df['LowestC'] = df['Close'].rolling(window=5).min()
+    return df
 
-def get_name_by_code(code):
-    row = krx[krx['Code'] == code]
-    return row['Name'].values[0] if not row.empty else None
-
-def analyze_stock(input_value):
-    if input_value.isdigit():
-        code = input_value
-        name = get_name_by_code(code)
-    else:
-        name = input_value
-        code = get_code_by_name(name)
-
-    if not code:
-        return {"error": "❌ 유효하지 않은 종목명 또는 코드입니다."}
-
-    df = fdr.DataReader(code, start='2014-01-01')
-
-    for window in [5, 10, 20, 40, 60]:
-        df[f"MA{window}"] = df["Close"].rolling(window=window).mean()
-
-    df["RSI"] = ta.momentum.RSIIndicator(close=df["Close"], window=14).rsi()
-    macd = ta.trend.MACD(close=df["Close"])
-    df["MACD"] = macd.macd()
-    df["MACD_signal"] = macd.macd_signal()
-    df["BB_upper"] = ta.volatility.BollingerBands(close=df["Close"]).bollinger_hband()
-    df["BB_lower"] = ta.volatility.BollingerBands(close=df["Close"]).bollinger_lband()
-    df["Envelope_high"] = df["MA20"] * 1.03
-    df["Envelope_low"] = df["MA20"] * 0.97
-
-    # ✅ 사용자 신호 수식 (기존 유지)
-    df["Signal_Triggered"] = (
-        (df["MA5"] > df["MA20"]) &
-        (df["MA5"].shift(1) <= df["MA20"].shift(1)) &
-        (df["RSI"] < 30)
+def detect_signals(df):
+    HighTop = 41
+    LowBottom = 5
+    signal = (
+        (df['CCI'] < -100) &
+        (df['RSI'] < 30) &
+        (df['DI-'] > HighTop) &
+        ((df['DI-'] < df['ADX']) | (df['DI+'] < LowBottom)) &
+        (df['LowestEnvelope'] > df['LowestC'])
     )
+    df['Signal'] = signal
+    signal_dates = df[signal].index.strftime('%Y-%m-%d').tolist()
+    latest_signal = signal.iloc[-1] if not signal.empty else False
+    return df, bool(latest_signal), signal_dates
 
-    latest = df.iloc[-1]
-    signal = bool(latest["Signal_Triggered"])
-    current_price = float(latest["Close"])
-
-    # ✅ 전체 데이터 기반 예측
-    future_prices = {}
-    change_rates = {}
-    periods = [1, 5, 10, 20, 40, 60, 80]
-
-    for p in periods:
-        returns = []
-        for i in df.index:
-            future_date = i + pd.Timedelta(days=p)
-            if future_date in df.index:
-                buy = df.loc[i, "Close"]
-                future = df.loc[future_date, "Close"]
-                change = (future - buy) / buy * 100
-                returns.append(change)
-        if returns:
-            avg_return = round(np.mean(returns), 2)
-            predicted_price = round(current_price * (1 + avg_return / 100), 2)
-            future_prices[f"{p}일"] = predicted_price
-            change_rates[f"{p}일"] = avg_return
-
-    # ✅ 추가: 과거 신호발생일자 리스트 (년-월-일 형식)
-    signal_dates = df[df["Signal_Triggered"] == True].dropna().index.strftime("%Y-%m-%d").tolist()
-
-    return {
-        "종목명": name,
-        "종목코드": code,
-        "현재가": current_price,
-        "예측가": future_prices,
-        "변화율": change_rates,
-        "신호발생": signal,               # ✅ 현재 신호 여부
-        "신호발생일자": signal_dates       # ✅ 과거 10년치 신호발생 날짜들
-    }
-
-@app.route('/')
-def index():
-    return '📈 Signal Analysis API is running.'
-
-@app.route('/analyze', methods=['GET'])
+@app.route("/analyze", methods=["GET"])
 def analyze():
-    symbol = request.args.get('symbol', '삼성전자')
-    result = analyze_stock(symbol)
-    return jsonify(result)
+    symbol = request.args.get("symbol", "")
+    if not symbol:
+        return jsonify({"error": "No symbol provided"}), 400
 
-if __name__ == '__main__':
-    app.run(debug=True)
+    try:
+        df = fdr.DataReader(symbol)
+        df = df[-2520:].copy()
+        df = calculate_technical_indicators(df)
+        df, signal_triggered, signal_dates = detect_signals(df)
+
+        current_price = df['Close'].iloc[-1]
+        forecast_days = [1, 5, 10, 20, 40, 60, 80]
+        predicted_prices = {}
+        predicted_changes = {}
+
+        for day in forecast_days:
+            if len(df) > day:
+                future_price = df['Close'].iloc[-1] * (1 + 0.002 * day)  # dummy model
+                predicted_prices[f"{day}일"] = round(future_price, 2)
+                predicted_changes[f"{day}일"] = round((future_price - current_price) / current_price * 100, 2)
+
+        result = {
+            "종목명": symbol,
+            "종목코드": df.iloc[-1].name.strftime('%Y%m%d'),
+            "현재가": round(current_price, 2),
+            "예측가": predicted_prices,
+            "변화율": predicted_changes,
+            "신호발생": signal_triggered,
+            "신호발생일자": signal_dates
+        }
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
