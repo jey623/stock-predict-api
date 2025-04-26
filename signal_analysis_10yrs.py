@@ -41,7 +41,7 @@ def analyze_stock(input_value):
     df["Envelope_high"] = df["MA20"] * 1.03
     df["Envelope_low"] = df["MA20"] * 0.97
 
-    # ✅ 사용자 정의 신호 수식 유지
+    # ✅ 사용자 신호 수식 (유지)
     df["Signal_Triggered"] = (
         (df["MA5"] > df["MA20"]) &
         (df["MA5"].shift(1) <= df["MA20"].shift(1)) &
@@ -52,7 +52,7 @@ def analyze_stock(input_value):
     signal = bool(latest["Signal_Triggered"])
     current_price = float(latest["Close"])
 
-    # ✅ 전체 데이터 기반 예측 (안정 처리 포함)
+    # ✅ 전체 데이터 기반 예측
     future_prices = {}
     change_rates = {}
     periods = [1, 5, 10, 20, 40, 60, 80]
@@ -72,13 +72,17 @@ def analyze_stock(input_value):
             future_prices[f"{p}일"] = predicted_price
             change_rates[f"{p}일"] = avg_return
 
+    # ✅ 추가: 과거 신호발생일자 리스트
+    signal_dates = df[df["Signal_Triggered"]].index.strftime("%Y-%m-%d").tolist()
+
     return {
         "종목명": name,
         "종목코드": code,
         "현재가": current_price,
         "예측가": future_prices,
         "변화율": change_rates,
-        "신호발생": signal
+        "신호발생": signal,              # ✅ 현재 신호 여부
+        "신호발생일자": signal_dates       # ✅ 과거 신호 발생 날짜 리스트
     }
 
 @app.route('/')
