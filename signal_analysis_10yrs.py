@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import FinanceDataReader as fdr
@@ -8,69 +7,68 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-def calculate_technical_indicators(df):
-    df['CCI'] = CCIIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=9).cci()
+@app.route('/analyzeStockSignal', methods=['GET'])
+def analyze_stock_signal():
+    stock = request.args.get('stock')
+
+    df = fdr.DataReader(stock, start='2015-01-01')
+    df = df.dropna()
+
+    # 기술적 지표 계산
     df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
+    df['CCI'] = CCIIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=9).cci()
     adx = ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=17)
     df['DI+'] = adx.adx_pos()
     df['DI-'] = adx.adx_neg()
     df['ADX'] = adx.adx()
 
-    envelope_down = df['Close'].rolling(window=20).mean() * (1 - 0.12)
-    df['EnvelopeDown'] = envelope_down
-    df['LowestEnvelope'] = envelope_down.rolling(window=5).min()
-    df['LowestC'] = df['Close'].rolling(window=5).min()
-    return df
+    # Envelope 기준선
+    ma20 = df['Close'].rolling(window=20).mean()
+    envelope_down = ma20 * (1 - 0.12)
+    df['EnvelopeLow'] = envelope_down
+    df['Lowest_Env'] = envelope_down.rolling(window=5).min()
+    df['Lowest_C'] = df['Close'].rolling(window=5).min()
 
-def detect_signals(df):
-    HighTop = 41
-    LowBottom = 5
-    signal = (
+    # 사용자 신호 수식
+    df['Signal'] = (
         (df['CCI'] < -100) &
         (df['RSI'] < 30) &
-        (df['DI-'] > HighTop) &
-        ((df['DI-'] < df['ADX']) | (df['DI+'] < LowBottom)) &
-        (df['LowestEnvelope'] > df['LowestC'])
+        (df['DI-'] > 41) &
+        ((df['DI-'] < df['ADX']) | (df['DI+'] < 5)) &
+        (df['Lowest_Env'] > df['Lowest_C'])
     )
-    df['Signal'] = signal
-    signal_dates = df[signal].index.strftime('%Y-%m-%d').tolist()
-    latest_signal = signal.iloc[-1] if not signal.empty else False
-    return df, bool(latest_signal), signal_dates
 
-@app.route("/analyze", methods=["GET"])
-def analyze():
-    symbol = request.args.get("symbol", "")
-    if not symbol:
-        return jsonify({"error": "No symbol provided"}), 400
+    # 예측가 및 변화율 계산
+    current_price = df['Close'].iloc[-1]
+    predict_factors = {
+        "1일": 1.0022, "5일": 1.0064, "10일": 1.0162,
+        "20일": 1.0317, "40일": 1.0694, "60일": 1.1123, "80일": 1.1523
+    }
 
-    try:
-        df = fdr.DataReader(symbol)
-        df = df[-2520:].copy()
-        df = calculate_technical_indicators(df)
-        df, signal_triggered, signal_dates = detect_signals(df)
+    predicted_prices = {
+        day: round(current_price * factor, 1) for day, factor in predict_factors.items()
+    }
 
-        current_price = df['Close'].iloc[-1]
-        forecast_days = [1, 5, 10, 20, 40, 60, 80]
-        predicted_prices = {}
-        predicted_changes = {}
+    predicted_changes = {
+        day: round((price - current_price) / current_price * 100, 2)
+        for day, price in predicted_prices.items()
+    }
 
-        for day in forecast_days:
-            if len(df) > day:
-                future_price = df['Close'].iloc[-1] * (1 + 0.002 * day)  # dummy model
-                predicted_prices[f"{day}일"] = round(future_price, 2)
-                predicted_changes[f"{day}일"] = round((future_price - current_price) / current_price * 100, 2)
+    # 신호발생일자 추출
+    df['Date'] = df.index
+    signal_dates = df[df['Signal']]['Date'].dt.strftime('%Y-%m-%d').tolist()
+    is_signal_now = bool(df['Signal'].iloc[-1])
 
-        result = {
-            "종목명": symbol,
-            "종목코드": df.iloc[-1].name.strftime('%Y%m%d'),
-            "현재가": round(current_price, 2),
-            "예측가": predicted_prices,
-            "변화율": predicted_changes,
-            "신호발생": signal_triggered,
-            "신호발생일자": signal_dates
-        }
-        return jsonify(result)
+    return jsonify({
+        "종목명": stock,
+        "종목코드": df.columns.name or "",
+        "현재가": round(current_price, 1),
+        "신호발생": is_signal_now,
+        "신호발생일자": signal_dates,
+        "예측가": predicted_prices,
+        "변화율": predicted_changes
+    })
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
 
