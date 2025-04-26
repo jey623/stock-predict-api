@@ -1,109 +1,82 @@
-# signal_analysis_10yrs.py
-import pandas as pd
-import numpy as np
-import FinanceDataReader as fdr
-from ta.momentum import RSIIndicator
-from ta.trend    import CCIIndicator, ADXIndicator
-from flask       import Flask, request, jsonify
+# signal_analysis_10yrs.py  ⟵ 최종본
+from datetime import datetime
+import pandas as pd, numpy as np, FinanceDataReader as fdr, ta
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+krx = fdr.StockListing("KRX")          # 상장종목 매핑용 -------------------------------------------------
 
-# ── KRX 종목명 ↔ 종목코드 매핑 ────────────────────────────────
-krx = fdr.StockListing('KRX')
+def _name2code(name): return krx.loc[krx["Name"] == name, "Code"].squeeze()
+def _code2name(code): return krx.loc[krx["Code"] == code, "Name"].squeeze()
 
-def get_code_by_name(name: str) -> str | None:
-    row = krx[krx['Name'] == name]
-    return row['Code'].values[0] if not row.empty else None
+# ────────────────────────── 핵심 함수 ──────────────────────────
+def analyze_stock(symbol, hi=41, lo=5, env_pct=12, rsi_th=30, cci_th=-100):
+    # ① 종목 식별
+    code = symbol if symbol.isdigit() else _name2code(symbol)
+    name = _code2name(code) if symbol.isdigit() else symbol
+    if not code or pd.isna(code):                     # 예외처리
+        return {"error": "❌ 유효하지 않은 종목."}
 
-def get_name_by_code(code: str) -> str | None:
-    row = krx[krx['Code'] == code]
-    return row['Name'].values[0] if not row.empty else None
+    # ② 데이터 로드
+    df = fdr.DataReader(code, start="2014-01-01").dropna()
 
-# ── 기술적 지표 계산 ────────────────────────────────────────
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df['CCI'] = CCIIndicator(high=df['High'], low=df['Low'],
-                             close=df['Close'], window=9).cci()
-    df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
+    # ③ 기술적 지표
+    df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"], 9).cci()
+    df["RSI"] = ta.momentum.RSIIndicator(df["Close"], 14).rsi()
+    adx   = ta.trend.ADXIndicator(df["High"], df["Low"], df["Close"], 17)
+    df["DI+"] , df["DI-"], df["ADX"] = adx.adx_pos(), adx.adx_neg(), adx.adx()
 
-    adx = ADXIndicator(high=df['High'], low=df['Low'],
-                       close=df['Close'], window=17)
-    df['DI+'] = adx.adx_pos()
-    df['DI-'] = adx.adx_neg()
-    df['ADX'] = adx.adx()
+    ma20  = df["Close"].rolling(20).mean()
+    env_dn = ma20 * (1 - env_pct/100)
+    df["LowestEnv"] = env_dn.rolling(5).min()
+    df["LowestC"]   = df["Close"].rolling(5).min()
 
-    # Envelope-(20, 12 %) ↓ 및 5일 최저값
-    env_down = df['Close'].rolling(window=20).mean() * (1 - 0.12)
-    df['EnvDown']  = env_down
-    df['LowEnv5']  = env_down.rolling(window=5).min()
-    df['LowC5']    = df['Close'].rolling(window=5).min()
-    return df
-
-# ── 신호 탐지 ───────────────────────────────────────────────
-def detect_signals(df: pd.DataFrame, hi: int = 41, lo: int = 5):
-    signal = (
-        (df['CCI'] < -100) &
-        (df['RSI'] < 30)   &
-        (df['DI-'] > hi)   &
-        ((df['DI-'] < df['ADX']) | (df['DI+'] < lo)) &
-        (df['LowEnv5'] > df['LowC5'])
+    # ④ 신호 조건 (변경 가능하도록 파라미터화)
+    df["Signal"] = (
+        (df["CCI"] < cci_th) &
+        (df["RSI"] < rsi_th) &
+        (df["DI-"] > hi) &
+        ((df["DI-"] < df["ADX"]) | (df["DI+"] < lo)) &
+        (df["LowestEnv"] > df["LowestC"])          # 필요에 따라 < 로 바꿔도 됨
     )
-    df['Signal'] = signal
-    dates  = df[signal].index.strftime('%Y-%m-%d').tolist()
-    latest = bool(signal.iloc[-1]) if len(signal) else False
-    return latest, dates
 
-# ── 메인 분석 함수 ──────────────────────────────────────────
-def analyze_stock(query: str, hi: int, lo: int):
-    # 종목코드/이름 자동 인식
-    if query.isdigit():
-        code = query
-        name = get_name_by_code(code) or query
-    else:
-        name = query
-        code = get_code_by_name(name) or query
-
-    # 10년치 데이터
-    df = fdr.DataReader(code, start='2014-01-01')
-    df = add_indicators(df)
-    is_signal_now, signal_dates = detect_signals(df, hi, lo)
-
-    current_price = float(df['Close'].iloc[-1])
-
-    # 단순 예측(예시: 고정 배수)
-    factors = {1:1.002, 5:1.01, 10:1.02, 20:1.04, 40:1.08, 60:1.12, 80:1.16}
-    pred, diff = {}, {}
-    for d, f in factors.items():
-        price = round(current_price * f, 2)
-        pred[f'{d}일']  = price
-        diff[f'{d}일']  = round((price - current_price) / current_price * 100, 2)
+    # ⑤ 결과 정리
+    cur = float(df["Close"].iat[-1])
+    periods = [1,5,10,20,40,60,80]
+    pred   = {f"{p}일": round(cur*(1+0.002*p),2) for p in periods}  # 더미 예측
+    change = {k: round((v-cur)/cur*100,2) for k,v in pred.items()}
+    sig_dates = df.index[df["Signal"]].strftime("%Y-%m-%d").tolist()
 
     return {
-        '종목명'     : name,
-        '종목코드'   : code,
-        '현재가'     : current_price,
-        '예측가'     : pred,
-        '변화율'     : diff,
-        '신호발생'   : is_signal_now,
-        '신호발생일자': signal_dates
+        "종목명": name,
+        "종목코드": code,
+        "현재가": cur,
+        "예측가": pred,
+        "변화율": change,
+        "신호발생": bool(df["Signal"].iat[-1]),
+        "신호발생일자": sig_dates
     }
 
-# ── Flask 엔드포인트 ───────────────────────────────────────
-@app.route('/')
-def home():
-    return '📈 Signal Analysis API is running.'
+# ────────────────────────── Flask 엔드포인트 ──────────────────────────
+@app.route("/")
+def home(): return "📈 Signal Analysis API is running."
 
-@app.route('/analyze', methods=['GET'])
-def analyze():
-    symbol = request.args.get('symbol', '삼성전자')
-    hi     = request.args.get('hi', 41, type=int)
-    lo     = request.args.get('lo', 5,  type=int)
+@app.route("/analyze")
+def api_analyze():
+    args = request.args
+    symbol = args.get("symbol", "")
+    if not symbol: return jsonify({"error":"Need symbol"}),400
 
-    try:
-        result = analyze_stock(symbol, hi, lo)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    # hi, lo, env_pct 등 숫자 파라미터는 없으면 기본값 유지
+    hi  = float(args.get("hi", 41))
+    lo  = float(args.get("lo", 5))
+    env = float(args.get("env", 12))
+    rsi = float(args.get("rsi", 30))
+    cci = float(args.get("cci", -100))
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    data = analyze_stock(symbol, hi, lo, env, rsi, cci)
+    return jsonify(data)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
 
