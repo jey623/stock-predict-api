@@ -5,11 +5,9 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 krx = fdr.StockListing("KRX")                      # ── 종목 매핑
 
-# ────────────────────────── 유틸 ──────────────────────────
 def _name2code(name): return krx.loc[krx["Name"] == name, "Code"].squeeze()
 def _code2name(code): return krx.loc[krx["Code"] == code, "Name"].squeeze()
 
-# ────────────────────────── 공통 파라미터 파싱 ──────────────────────────
 def _parse_params(q):
     return dict(
         hi         = float(q.get("hi", 41)),
@@ -23,24 +21,20 @@ def _parse_params(q):
         env_pct    = float(q.get("env_pct", 12))
     )
 
-# ────────────────────────── 전자책 조건 기반 분석 ──────────────────────────
 def analyze_e_book_signals(df):
     result = {}
 
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
 
-    # 지지선 / 저항선
     result['지지선'] = round(df['Close'].rolling(window=20).min().iloc[-1], 2)
     result['저항선'] = round(df['Close'].rolling(window=20).max().iloc[-1], 2)
 
-    # 골든/데드크로스
     golden = (df['MA20'] > df['MA60']) & (df['MA20'].shift() <= df['MA60'].shift())
     dead = (df['MA20'] < df['MA60']) & (df['MA20'].shift() >= df['MA60'].shift())
     result['골든크로스'] = bool(golden.iloc[-1])
     result['데드크로스'] = bool(dead.iloc[-1])
 
-    # 이격도
     disparity_20 = (df['Close'] / df['MA20']) * 100
     disparity_60 = (df['Close'] / df['MA60']) * 100
     d20 = disparity_20.iloc[-1]
@@ -57,8 +51,8 @@ def analyze_e_book_signals(df):
     result['이격도_20일'] = classify_disparity(d20)
     result['이격도_60일'] = classify_disparity(d60)
 
-    # OBV
-    obv = ta.volume.OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume']).obv()
+    obv_indicator = ta.volume.OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume'])
+    obv = obv_indicator.on_balance_volume()
     obv_trend = obv.rolling(window=5).mean().iloc[-1] - obv.rolling(window=5).mean().iloc[-2]
     price_trend = df['Close'].iloc[-1] - df['Close'].iloc[-2]
 
@@ -71,7 +65,6 @@ def analyze_e_book_signals(df):
 
     return result
 
-# ────────────────────────── 핵심 분석 함수 ──────────────────────────
 def analyze_stock(symbol, **p):
     code = symbol if symbol.isdigit() else _name2code(symbol)
     name = _code2name(code) if symbol.isdigit() else symbol
@@ -81,18 +74,15 @@ def analyze_stock(symbol, **p):
     df = fdr.DataReader(code, start="2014-01-01")
     df = df.dropna().copy()
 
-    df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"],
-                                      window=p["cci_period"]).cci()
-    df["RSI"] = ta.momentum.RSIIndicator(df["Close"],
-                                         window=p["rsi_period"]).rsi()
-    adx = ta.trend.ADXIndicator(df["High"], df["Low"], df["Close"],
-                                window=p["di_period"])
+    df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"], window=p["cci_period"]).cci()
+    df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=p["rsi_period"]).rsi()
+    adx = ta.trend.ADXIndicator(df["High"], df["Low"], df["Close"], window=p["di_period"])
     df["DI+"], df["DI-"], df["ADX"] = adx.adx_pos(), adx.adx_neg(), adx.adx()
 
-    ma   = df["Close"].rolling(p["env_len"]).mean()
+    ma = df["Close"].rolling(p["env_len"]).mean()
     envd = ma * (1 - p["env_pct"] / 100)
     df["LowestEnv"] = envd.rolling(5).min()
-    df["LowestC"]   = df["Close"].rolling(5).min()
+    df["LowestC"] = df["Close"].rolling(5).min()
     df = df.dropna().copy()
 
     df["Signal"] = (
@@ -129,7 +119,6 @@ def analyze_stock(symbol, **p):
         "기술적_분석": e_book_signals
     }
 
-# ────────────────────────── Flask 엔드포인트 ──────────────────────────
 @app.route("/")
 def home():
     return "📈 Signal Analysis API is running."
