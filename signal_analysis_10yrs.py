@@ -3,27 +3,34 @@ import pandas as pd, FinanceDataReader as fdr, ta
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-krx = fdr.StockListing("KRX")                      # ── 종목 매핑
+krx = fdr.StockListing("KRX")  # ── 종목 매핑
 
 # ────────────────────────── 유틸 ──────────────────────────
-def _name2code(name): return krx.loc[krx["Name"] == name, "Code"].squeeze()
-def _code2name(code): return krx.loc[krx["Code"] == code, "Name"].squeeze()
+def _name2code(name):
+    return krx.loc[krx["Name"] == name, "Code"].squeeze()
+
+def _code2name(code):
+    return krx.loc[krx["Code"] == code, "Name"].squeeze()
 
 # ────────────────────────── 공통 파라미터 파싱 ──────────────────────────
+# NOTE: 신호발생 로직 제거로 hi / lo 등은 더 이상 사용되지 않지만, 
+#       향후 확장 가능성을 위해 파라미터 파싱 함수는 유지해 둡니다.
+
 def _parse_params(q):
     return dict(
-        hi         = float(q.get("hi", 41)),
-        lo         = float(q.get("lo", 5)),
-        cci_period = int  (q.get("cci_period", 9)),
-        cci_th     = float(q.get("cci_th", -100)),
-        rsi_period = int  (q.get("rsi_period", 14)),
-        rsi_th     = float(q.get("rsi_th", 30)),
-        di_period  = int  (q.get("di_period", 17)),
-        env_len    = int  (q.get("env_len", 20)),
-        env_pct    = float(q.get("env_pct", 12))
+        hi=float(q.get("hi", 41)),
+        lo=float(q.get("lo", 5)),
+        cci_period=int(q.get("cci_period", 9)),
+        cci_th=float(q.get("cci_th", -100)),
+        rsi_period=int(q.get("rsi_period", 14)),
+        rsi_th=float(q.get("rsi_th", 30)),
+        di_period=int(q.get("di_period", 17)),
+        env_len=int(q.get("env_len", 20)),
+        env_pct=float(q.get("env_pct", 12)),
     )
 
 # ────────────────────────── 핵심 분석 함수 ──────────────────────────
+
 def analyze_stock(symbol, **p):
     code = symbol if symbol.isdigit() else _name2code(symbol)
     name = _code2name(code) if symbol.isdigit() else symbol
@@ -33,29 +40,17 @@ def analyze_stock(symbol, **p):
     # ── 데이터 (10 년치 일봉)
     df = fdr.DataReader(code, start="2014-01-01")
 
-    # ── 지표 계산
-    df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"],
-                                      window=p["cci_period"]).cci()
-    df["RSI"] = ta.momentum.RSIIndicator(df["Close"],
-                                         window=p["rsi_period"]).rsi()
-    adx = ta.trend.ADXIndicator(df["High"], df["Low"], df["Close"],
-                                window=p["di_period"])
+    # ── 지표 계산 (보존: 향후 활용 가능)
+    df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"], window=p["cci_period"]).cci()
+    df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=p["rsi_period"]).rsi()
+    adx = ta.trend.ADXIndicator(df["High"], df["Low"], df["Close"], window=p["di_period"])
     df["DI+"], df["DI-"], df["ADX"] = adx.adx_pos(), adx.adx_neg(), adx.adx()
 
-    ma   = df["Close"].rolling(p["env_len"]).mean()
+    ma = df["Close"].rolling(p["env_len"]).mean()
     envd = ma * (1 - p["env_pct"] / 100)
     df["LowestEnv"] = envd.rolling(5).min()
-    df["LowestC"]   = df["Close"].rolling(5).min()
+    df["LowestC"] = df["Close"].rolling(5).min()
     df = df.dropna().copy()
-
-    # ── 신호 판정
-    df["Signal"] = (
-        (df["CCI"] < p["cci_th"]) &
-        (df["RSI"] < p["rsi_th"]) &
-        (df["DI-"] > p["hi"]) &
-        ((df["DI-"] < df["ADX"]) | (df["DI+"] < p["lo"])) &
-        (df["LowestEnv"] > df["LowestC"])
-    )
 
     # ── 현재가
     cur = float(df["Close"].iat[-1])
@@ -65,13 +60,12 @@ def analyze_stock(symbol, **p):
     future_prices, change = {}, {}
 
     for d in periods:
-        # 각 날짜별 d일 후 가격이 존재할 때만 수익률 계산
         future_price = df["Close"].shift(-d)
         valid = ~future_price.isna()
         returns = ((future_price[valid] - df["Close"][valid]) / df["Close"][valid] * 100)
         if not returns.empty:
-            avg_ret = round(returns.mean(), 2)                      # 평균 변화율 %
-            pred_price = round(cur * (1 + avg_ret / 100), 2)        # 예상 가격
+            avg_ret = round(returns.mean(), 2)
+            pred_price = round(cur * (1 + avg_ret / 100), 2)
             change[f"{d}일"] = avg_ret
             future_prices[f"{d}일"] = pred_price
 
@@ -81,10 +75,10 @@ def analyze_stock(symbol, **p):
         "현재가": cur,
         "예측가": future_prices,
         "변화율": change,
-        "신호발생": bool(df["Signal"].iloc[-1])   # 오늘(가장 최근) 신호 여부
     }
 
 # ────────────────────────── Flask 엔드포인트 ──────────────────────────
+
 @app.route("/")
 def home():
     return "📈 Signal Analysis API is running."
