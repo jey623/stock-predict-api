@@ -3,7 +3,7 @@ import pandas as pd, FinanceDataReader as fdr, ta
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-krx = fdr.StockListing("KRX")                      # ── 종목 매핑
+krx = fdr.StockListing("KRX")  # ── 종목 매핑
 
 def _name2code(name): return krx.loc[krx["Name"] == name, "Code"].squeeze()
 def _code2name(code): return krx.loc[krx["Code"] == code, "Name"].squeeze()
@@ -115,7 +115,6 @@ def analyze_stock(symbol, **p):
         "현재가": cur,
         "예측가": future_prices,
         "변화율": change,
-        "신호발생": bool(df["Signal"].iloc[-1]),
         "기술적_분석": e_book_signals
     }
 
@@ -134,4 +133,5 @@ def api_analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
