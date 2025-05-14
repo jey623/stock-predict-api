@@ -65,6 +65,51 @@ def analyze_e_book_signals(df):
 
     return result
 
+def compute_ichimoku(df):
+    df = df.copy()
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA30'] = df['Close'].rolling(window=30).mean()
+    df['MA60'] = df['Close'].rolling(window=60).mean()
+    df['MA120'] = df['Close'].rolling(window=120).mean()
+
+    nine_high = df['High'].rolling(window=9).max()
+    nine_low = df['Low'].rolling(window=9).min()
+    df['Tenkan_sen'] = (nine_high + nine_low) / 2
+
+    twenty_six_high = df['High'].rolling(window=26).max()
+    twenty_six_low = df['Low'].rolling(window=26).min()
+    df['Kijun_sen'] = (twenty_six_high + twenty_six_low) / 2
+
+    df['Senkou_Span1'] = ((df['Tenkan_sen'] + df['Kijun_sen']) / 2).shift(26)
+
+    fifty_two_high = df['High'].rolling(window=52).max()
+    fifty_two_low = df['Low'].rolling(window=52).min()
+    df['Senkou_Span2'] = ((fifty_two_high + fifty_two_low) / 2).shift(26)
+
+    df['Cloud_Lower'] = df[['Senkou_Span1', 'Senkou_Span2']].min(axis=1)
+    df['Cloud_Upper'] = df[['Senkou_Span1', 'Senkou_Span2']].max(axis=1)
+
+    df['Tenkan_Kijun_diff'] = abs(df['Tenkan_sen'] - df['Kijun_sen'])
+    df['Ichimoku_Bottom_Signal'] = (
+        (df['Close'] < df['Cloud_Lower']) &
+        (df['Tenkan_Kijun_diff'] < 0.1)
+    )
+
+    df['Ichimoku_Golden_Cross'] = (df['Tenkan_sen'] > df['Kijun_sen']) & (df['Tenkan_sen'].shift() <= df['Kijun_sen'].shift())
+
+    df['Ichimoku_Clean_Reversal'] = (
+        (df['MA5'] < df['MA20']) &
+        (df['MA20'] < df['MA30']) &
+        (df['MA30'] < df['MA60']) &
+        (df['MA60'] < df['MA120'])
+    )
+
+    for t in [9, 17, 26, 52]:
+        df[f'Change_Point_{t}'] = df['Close'].pct_change(periods=t).abs()
+
+    return df
+
 def analyze_stock(symbol, **p):
     code = symbol if symbol.isdigit() else _name2code(symbol)
     name = _code2name(code) if symbol.isdigit() else symbol
@@ -73,6 +118,8 @@ def analyze_stock(symbol, **p):
 
     df = fdr.DataReader(code, start="2014-01-01")
     df = df.dropna().copy()
+
+    df = compute_ichimoku(df)
 
     df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"], window=p["cci_period"]).cci()
     df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=p["rsi_period"]).rsi()
@@ -115,7 +162,16 @@ def analyze_stock(symbol, **p):
         "현재가": cur,
         "예측가": future_prices,
         "변화율": change,
-        "기술적_분석": e_book_signals
+        "기술적_분석": e_book_signals,
+        "일목균형표_최저점_신호": bool(df["Ichimoku_Bottom_Signal"].iloc[-1]),
+        "일목균형표_전환선_골든크로스": bool(df["Ichimoku_Golden_Cross"].iloc[-1]),
+        "일목균형표_정갈한_역배열": bool(df["Ichimoku_Clean_Reversal"].iloc[-1]),
+        "일목균형표_변화일_pct": {
+            "9일": round(df['Change_Point_9'].iloc[-1]*100, 2),
+            "17일": round(df['Change_Point_17'].iloc[-1]*100, 2),
+            "26일": round(df['Change_Point_26'].iloc[-1]*100, 2),
+            "52일": round(df['Change_Point_52'].iloc[-1]*100, 2),
+        }
     }
 
 @app.route("/")
