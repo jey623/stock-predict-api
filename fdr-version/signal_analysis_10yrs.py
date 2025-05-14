@@ -3,7 +3,7 @@ import pandas as pd, FinanceDataReader as fdr, ta
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-krx = fdr.StockListing("KRX")  # ── 종목 매핑
+krx = fdr.StockListing("KRX")
 
 def _name2code(name): return krx.loc[krx["Name"] == name, "Code"].squeeze()
 def _code2name(code): return krx.loc[krx["Code"] == code, "Name"].squeeze()
@@ -63,7 +63,7 @@ def analyze_e_book_signals(df):
     else:
         result['OBV_분석'] = "OBV와 주가 방향 일치"
 
-    # 일목균형표 계산 및 포함
+    # 일목균형표 계산 (전자책 1권 + 2권 반영)
     nine_high = df['High'].rolling(window=9).max()
     nine_low = df['Low'].rolling(window=9).min()
     df['전환선'] = (nine_high + nine_low) / 2
@@ -82,6 +82,13 @@ def analyze_e_book_signals(df):
 
     result['일목_최저점'] = bool((df['Close'].iloc[-1] < df['구름하단'].iloc[-1]) and (df['전기차이'].iloc[-1] < 0.1))
     result['일목_골든크로스'] = bool((df['전환선'].iloc[-1] > df['기준선'].iloc[-1]) and (df['전환선'].iloc[-2] <= df['기준선'].iloc[-2]))
+
+    if result['일목_최저점']:
+        result['일목_해석'] = "전환선과 기준선이 평행하고 구름대 아래 위치 → 바닥 시그널 가능"
+    elif result['일목_골든크로스']:
+        result['일목_해석'] = "전환선이 기준선을 상향 돌파 → 상승 추세 전환 가능"
+    else:
+        result['일목_해석'] = "일목균형표 기준 특이점 없음"
 
     return result
 
@@ -153,3 +160,4 @@ def api_analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
