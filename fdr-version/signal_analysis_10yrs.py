@@ -65,6 +65,24 @@ def analyze_e_book_signals(df):
 
     return result
 
+def generate_ichimoku_summary(df):
+    parts = []
+    if df["Ichimoku_Bottom_Signal"].iloc[-1]:
+        parts.append("현재 종가는 구름대 아래에 있고 전환선과 기준선이 평행하여 바닥 시그널로 해석됩니다.")
+    if df["Ichimoku_Golden_Cross"].iloc[-1]:
+        parts.append("전환선이 기준선을 상향 돌파하여 상승 전환 가능성이 있습니다.")
+    if df["Ichimoku_Clean_Reversal"].iloc[-1]:
+        parts.append("5-120일 이평선이 정갈한 역배열 상태이며 추세 반전 준비 구간일 수 있습니다.")
+    cp = {
+        9: df['Change_Point_9'].iloc[-1]*100,
+        17: df['Change_Point_17'].iloc[-1]*100,
+        26: df['Change_Point_26'].iloc[-1]*100,
+        52: df['Change_Point_52'].iloc[-1]*100
+    }
+    max_change = max(cp.items(), key=lambda x: x[1])
+    parts.append(f"최근 {max_change[0]}일 기준 주가 변동성은 {round(max_change[1], 2)}%입니다.")
+    return " ".join(parts)
+
 def compute_ichimoku(df):
     df = df.copy()
     df['MA5'] = df['Close'].rolling(window=5).mean()
@@ -155,6 +173,7 @@ def analyze_stock(symbol, **p):
             future_prices[f"{d}일"] = pred_price
 
     e_book_signals = analyze_e_book_signals(df)
+    ichimoku_summary = generate_ichimoku_summary(df)
 
     return {
         "종목명": name,
@@ -171,7 +190,8 @@ def analyze_stock(symbol, **p):
             "17일": round(df['Change_Point_17'].iloc[-1]*100, 2),
             "26일": round(df['Change_Point_26'].iloc[-1]*100, 2),
             "52일": round(df['Change_Point_52'].iloc[-1]*100, 2),
-        }
+        },
+        "일목균형표_해석": ichimoku_summary
     }
 
 @app.route("/")
@@ -189,5 +209,4 @@ def api_analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
 
