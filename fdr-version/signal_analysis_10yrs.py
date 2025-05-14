@@ -63,7 +63,7 @@ def analyze_e_book_signals(df):
     else:
         result['OBV_분석'] = "OBV와 주가 방향 일치"
 
-    # 일목균형표 추가 분석
+    # 일목균형표 계산 및 포함
     nine_high = df['High'].rolling(window=9).max()
     nine_low = df['Low'].rolling(window=9).min()
     df['전환선'] = (nine_high + nine_low) / 2
@@ -73,14 +73,11 @@ def analyze_e_book_signals(df):
     df['기준선'] = (twenty_six_high + twenty_six_low) / 2
 
     df['선행스팬1'] = ((df['전환선'] + df['기준선']) / 2).shift(26)
-
     fifty_two_high = df['High'].rolling(window=52).max()
     fifty_two_low = df['Low'].rolling(window=52).min()
     df['선행스팬2'] = ((fifty_two_high + fifty_two_low) / 2).shift(26)
 
     df['구름하단'] = df[['선행스팬1', '선행스팬2']].min(axis=1)
-    df['구름상단'] = df[['선행스팬1', '선행스팬2']].max(axis=1)
-
     df['전기차이'] = abs(df['전환선'] - df['기준선'])
 
     result['일목_최저점'] = bool((df['Close'].iloc[-1] < df['구름하단'].iloc[-1]) and (df['전기차이'].iloc[-1] < 0.1))
@@ -156,4 +153,3 @@ def api_analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
