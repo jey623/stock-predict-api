@@ -63,70 +63,30 @@ def analyze_e_book_signals(df):
     else:
         result['OBV_분석'] = "OBV와 주가 방향 일치"
 
-    return result
-
-def generate_ichimoku_summary(df):
-    parts = []
-    if df["Ichimoku_Bottom_Signal"].iloc[-1]:
-        parts.append("현재 종가는 구름대 아래에 있고 전환선과 기준선이 평행하여 바닥 시그널로 해석됩니다.")
-    if df["Ichimoku_Golden_Cross"].iloc[-1]:
-        parts.append("전환선이 기준선을 상향 돌파하여 상승 전환 가능성이 있습니다.")
-    if df["Ichimoku_Clean_Reversal"].iloc[-1]:
-        parts.append("5-120일 이평선이 정갈한 역배열 상태이며 추세 반전 준비 구간일 수 있습니다.")
-    cp = {
-        9: df['Change_Point_9'].iloc[-1]*100,
-        17: df['Change_Point_17'].iloc[-1]*100,
-        26: df['Change_Point_26'].iloc[-1]*100,
-        52: df['Change_Point_52'].iloc[-1]*100
-    }
-    max_change = max(cp.items(), key=lambda x: x[1])
-    parts.append(f"최근 {max_change[0]}일 기준 주가 변동성은 {round(max_change[1], 2)}%입니다.")
-    return " ".join(parts)
-
-def compute_ichimoku(df):
-    df = df.copy()
-    df['MA5'] = df['Close'].rolling(window=5).mean()
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['MA30'] = df['Close'].rolling(window=30).mean()
-    df['MA60'] = df['Close'].rolling(window=60).mean()
-    df['MA120'] = df['Close'].rolling(window=120).mean()
-
+    # 일목균형표 추가 분석
     nine_high = df['High'].rolling(window=9).max()
     nine_low = df['Low'].rolling(window=9).min()
-    df['Tenkan_sen'] = (nine_high + nine_low) / 2
+    df['전환선'] = (nine_high + nine_low) / 2
 
     twenty_six_high = df['High'].rolling(window=26).max()
     twenty_six_low = df['Low'].rolling(window=26).min()
-    df['Kijun_sen'] = (twenty_six_high + twenty_six_low) / 2
+    df['기준선'] = (twenty_six_high + twenty_six_low) / 2
 
-    df['Senkou_Span1'] = ((df['Tenkan_sen'] + df['Kijun_sen']) / 2).shift(26)
+    df['선행스팬1'] = ((df['전환선'] + df['기준선']) / 2).shift(26)
 
     fifty_two_high = df['High'].rolling(window=52).max()
     fifty_two_low = df['Low'].rolling(window=52).min()
-    df['Senkou_Span2'] = ((fifty_two_high + fifty_two_low) / 2).shift(26)
+    df['선행스팬2'] = ((fifty_two_high + fifty_two_low) / 2).shift(26)
 
-    df['Cloud_Lower'] = df[['Senkou_Span1', 'Senkou_Span2']].min(axis=1)
-    df['Cloud_Upper'] = df[['Senkou_Span1', 'Senkou_Span2']].max(axis=1)
+    df['구름하단'] = df[['선행스팬1', '선행스팬2']].min(axis=1)
+    df['구름상단'] = df[['선행스팬1', '선행스팬2']].max(axis=1)
 
-    df['Tenkan_Kijun_diff'] = abs(df['Tenkan_sen'] - df['Kijun_sen'])
-    df['Ichimoku_Bottom_Signal'] = (
-        (df['Close'] < df['Cloud_Lower']) &
-        (df['Tenkan_Kijun_diff'] < 0.1)
-    )
+    df['전기차이'] = abs(df['전환선'] - df['기준선'])
 
-    df['Ichimoku_Golden_Cross'] = (df['Tenkan_sen'] > df['Kijun_sen']) & (df['Tenkan_sen'].shift() <= df['Kijun_sen'].shift())
+    result['일목_최저점'] = bool((df['Close'].iloc[-1] < df['구름하단'].iloc[-1]) and (df['전기차이'].iloc[-1] < 0.1))
+    result['일목_골든크로스'] = bool((df['전환선'].iloc[-1] > df['기준선'].iloc[-1]) and (df['전환선'].iloc[-2] <= df['기준선'].iloc[-2]))
 
-    df['Ichimoku_Clean_Reversal'] = (
-        (df['MA5'] < df['MA20']) &
-        (df['MA20'] < df['MA30']) &
-        (df['MA30'] < df['MA60']) &
-        (df['MA60'] < df['MA120'])
-    )
-
-    for t in [9, 17, 26, 52]:
-        df[f'Change_Point_{t}'] = df['Close'].pct_change(periods=t).abs()
-
-    return df
+    return result
 
 def analyze_stock(symbol, **p):
     code = symbol if symbol.isdigit() else _name2code(symbol)
@@ -136,8 +96,6 @@ def analyze_stock(symbol, **p):
 
     df = fdr.DataReader(code, start="2014-01-01")
     df = df.dropna().copy()
-
-    df = compute_ichimoku(df)
 
     df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"], window=p["cci_period"]).cci()
     df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=p["rsi_period"]).rsi()
@@ -173,7 +131,6 @@ def analyze_stock(symbol, **p):
             future_prices[f"{d}일"] = pred_price
 
     e_book_signals = analyze_e_book_signals(df)
-    ichimoku_summary = generate_ichimoku_summary(df)
 
     return {
         "종목명": name,
@@ -181,17 +138,7 @@ def analyze_stock(symbol, **p):
         "현재가": cur,
         "예측가": future_prices,
         "변화율": change,
-        "기술적_분석": e_book_signals,
-        "일목균형표_최저점_신호": bool(df["Ichimoku_Bottom_Signal"].iloc[-1]),
-        "일목균형표_전환선_골든크로스": bool(df["Ichimoku_Golden_Cross"].iloc[-1]),
-        "일목균형표_정갈한_역배열": bool(df["Ichimoku_Clean_Reversal"].iloc[-1]),
-        "일목균형표_변화일_pct": {
-            "9일": round(df['Change_Point_9'].iloc[-1]*100, 2),
-            "17일": round(df['Change_Point_17'].iloc[-1]*100, 2),
-            "26일": round(df['Change_Point_26'].iloc[-1]*100, 2),
-            "52일": round(df['Change_Point_52'].iloc[-1]*100, 2),
-        },
-        "일목균형표_해석": ichimoku_summary
+        "기술적_분석": e_book_signals
     }
 
 @app.route("/")
