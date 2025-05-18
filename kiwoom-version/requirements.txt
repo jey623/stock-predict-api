@@ -1,5 +1,5 @@
 flask
 pandas
-requests
 ta
+requests
 gunicorn
