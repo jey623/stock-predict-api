@@ -51,7 +51,7 @@ def request_kiwoom_daily_data(token, code, qry_date, indc_tp='0'):
     if r.status_code != 200:
         raise Exception(f"❌ 요청 실패: {r.status_code}, {r.text}")
     js = r.json()
-    if "daly_stkpc" not in js:
+    if "daly_stkpc" not in js or not js["daly_stkpc"]:
         raise Exception(f"❌ 데이터 없음 또는 형식 오류: {js}")
     df = pd.DataFrame(js["daly_stkpc"])
     df.rename(columns={
@@ -70,6 +70,12 @@ def analyze_e_book_signals(df):
     df["DIS20"] = (df["Close"] / df["MA20"]) * 100
     df["OBV"] = ta.volume.OnBalanceVolumeIndicator(df["Close"], df["Volume"]).on_balance_volume()
     df.dropna(inplace=True)
+
+    if len(df) < 2:
+        return {
+            "error": "분석 가능한 데이터가 부족합니다 (2개 미만)."
+        }
+
     return {
         "골든크로스": bool((df["MA20"].iloc[-2] < df["MA60"].iloc[-2]) and (df["MA20"].iloc[-1] > df["MA60"].iloc[-1])),
         "데드크로스": bool((df["MA20"].iloc[-2] > df["MA60"].iloc[-2]) and (df["MA20"].iloc[-1] < df["MA60"].iloc[-1])),
@@ -102,8 +108,15 @@ def analyze():
         token = get_token()
         df = request_kiwoom_daily_data(token, code, today)
         tech = analyze_e_book_signals(df)
+
+        if isinstance(tech, dict) and "error" in tech:
+            return jsonify({"error": tech["error"]})
+
         pred = calculate_predictions(df)
-        return jsonify({"기술적분석": tech, "변화율_및_예측가": pred})
+        return jsonify({
+            "기술적분석": tech,
+            "변화율_및_예측가": pred
+        })
     except Exception as e:
         return jsonify({"error": str(e)})
 
