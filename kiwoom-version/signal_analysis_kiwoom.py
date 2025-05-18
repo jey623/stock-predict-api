@@ -1,167 +1,106 @@
-# ==================== signal_analysis_kiwoom.py ====================
-import os
-import json
-import requests
-from datetime import datetime
-import pandas as pd
-import ta
-from flask import Flask, request, jsonify
-
-# ==================== API KEY LOAD ====================
-def load_keys():
-    appkey = os.getenv("APP_KEY", "").strip()
-    appsecret = os.getenv("APP_SECRET", "").strip()
-    if not appkey or not appsecret:
-        raise Exception("\u274c \ud658\uacbd\ubcc0\uc218 APP_KEY \ub610\ub294 APP_SECRET\uc774 \uc124\uc815\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.")
-    return appkey, appsecret
-
-# ==================== GET ACCESS TOKEN ====================
-def get_access_token():
-    appkey, appsecret = load_keys()
-    url = "https://openapi.kiwoom.com:9443/oauth2/tokenP"
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "grant_type": "client_credentials",
-        "appkey": appkey,
-        "appsecret": appsecret
-    }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code != 200:
-        raise Exception(f"\u274c \ud1a0\ud070 \ubc1c\uae09 \uc2e4\ud328: {response.status_code} {response.text}")
-    return response.json()["access_token"]
-
-# ==================== GET OHLCV FROM KIWOOOM ====================
-def get_ohlcv_kiwoom(stk_cd: str, base_dt: str = None):
-    token = get_access_token()
-    url = "https://openapi.kiwoom.com:9443/api/v1/quotations/daily-price"
-    headers = {
-        "Content-Type": "application/json",
-        "authorization": f"Bearer {token}",
-        "appkey": os.getenv("APP_KEY").strip(),
-        "appsecret": os.getenv("APP_SECRET").strip(),
-        "tr_id": "FHKST01010400",
-    }
-
-    if base_dt is None:
-        base_dt = datetime.now().strftime("%Y%m%d")
-
-    body = {
-        "fid_cond_mrkt_div_code": "J",
-        "fid_input_iscd": stk_cd,
-        "fid_input_date_1": base_dt,
-        "fid_org_adj_prc": "1",
-    }
-
-    response = requests.post(url, headers=headers, json=body)
-    if response.status_code != 200:
-        raise Exception(f"\u274c \uc77c\ubd09 \uc870\ud68c \uc2e4\ud328: {response.status_code} {response.text}")
-
-    items = response.json().get("output2", [])
-    if not items:
-        raise Exception("\u274c \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.")
-
-    df = pd.DataFrame(items)
-    df["\ub0a0\uc9dc"] = pd.to_datetime(df["stck_bsop_date"])
-    df.set_index("\ub0a0\uc9dc", inplace=True)
-    df = df.sort_index()
-    df = df.astype({
-        "stck_oprc": float,
-        "stck_hgpr": float,
-        "stck_lwpr": float,
-        "stck_clpr": float,
-        "acml_vol": float
-    })
-    df.rename(columns={
-        "stck_oprc": "Open",
-        "stck_hgpr": "High",
-        "stck_lwpr": "Low",
-        "stck_clpr": "Close",
-        "acml_vol": "Volume"
-    }, inplace=True)
-    return df
-
-# ==================== TECHNICAL ANALYSIS ====================
-def analyze_ichimoku(df):
-    result = {}
-    df["MA20"] = df["Close"].rolling(20).mean()
-    df["MA60"] = df["Close"].rolling(60).mean()
-    result["\uc9c0\uc9c0\uc120"] = round(df["Close"].rolling(20).min().iloc[-1], 2)
-    result["\uc800\ud76c\uc120"] = round(df["Close"].rolling(20).max().iloc[-1], 2)
-
-    golden = (df["MA20"] > df["MA60"]) & (df["MA20"].shift() <= df["MA60"].shift())
-    dead = (df["MA20"] < df["MA60"]) & (df["MA20"].shift() >= df["MA60"].shift())
-    result["\uace8\ub4dc\ud06c\ub85c\uc2a4"] = bool(golden.iloc[-1])
-    result["\ub370\ub4dc\ud06c\ub85c\uc2a4"] = bool(dead.iloc[-1])
-
-    d20 = (df["Close"] / df["MA20"] * 100).iloc[-1]
-    d60 = (df["Close"] / df["MA60"] * 100).iloc[-1]
-
-    def classify_disparity(val):
-        if val < 92:
-            return f"\uac00\ub9e4\ub3c4({val:.1f}%)"
-        elif val > 102:
-            return f"\uac00\ub9e4\uc218({val:.1f}%)"
-        else:
-            return f"\uc911\ub9bd({val:.1f}%)"
-
-    result["\uc774\uaca9\ub3c4_20\uc77c"] = classify_disparity(d20)
-    result["\uc774\uaca9\ub3c4_60\uc77c"] = classify_disparity(d60)
-
-    obv = ta.volume.OnBalanceVolumeIndicator(df["Close"], df["Volume"]).on_balance_volume()
-    obv_trend = obv.rolling(5).mean().iloc[-1] - obv.rolling(5).mean().iloc[-2]
-    price_trend = df["Close"].iloc[-1] - df["Close"].iloc[-2]
-
-    if obv_trend > 0 and price_trend < 0:
-        result["OBV_\ubd84\uc11d"] = "OBV \uc720\uc9c0, \uc8fc\uac00 \ud558\ub791 \u2192 \ub9e4\uc9d1 \uac00\ub2a5\uc131"
-    elif obv_trend < 0 and price_trend > 0:
-        result["OBV_\ubd84\uc11d"] = "OBV \ud558\ub791, \uc8fc\uac00 \uc0c1\uc2b9 \u2192 \ubd84\uc0b0 \uac00\ub2a5\uc131"
-    else:
-        result["OBV_\ubd84\uc11d"] = "OBV\uc640 \uc8fc\uac00 \ubc29\ud5a5 \uc77c\uce58"
-
-    # Ichimoku
-    df["\uc804\ud658\uc120"] = (df["High"].rolling(9).max() + df["Low"].rolling(9).min()) / 2
-    df["\uae30\uc900\uc120"] = (df["High"].rolling(26).max() + df["Low"].rolling(26).min()) / 2
-    df["\uc120\ud68d\uc2a4\ud3101"] = ((df["\uc804\ud658\uc120"] + df["\uae30\uc900\uc120"]) / 2).shift(26)
-    df["\uc120\ud68d\uc2a4\ud3102"] = ((df["High"].rolling(52).max() + df["Low"].rolling(52).min()) / 2).shift(26)
-    df["\uad6c\ub984\ud558\ub2e8"] = df[["\uc120\ud68d\uc2a4\ud3101", "\uc120\ud68d\uc2a4\ud3102"]].min(axis=1)
-    df["\uc804\uae30\ucc28\uc774"] = abs(df["\uc804\ud658\uc120"] - df["\uae30\uc900\uc120"])
-
-    result["\uc77c\ubaa9_\ucd5c\uc800\uc810"] = bool((df["Close"].iloc[-1] < df["\uad6c\ub984\ud558\ub2e8"].iloc[-1]) and (df["\uc804\uae30\ucc28\uc774"].iloc[-1] < 0.1))
-    result["\uc77c\ubaa9_\uace8\ub4dc\ud06c\ub85c\uc2a4"] = bool((df["\uc804\ud658\uc120"].iloc[-1] > df["\uae30\uc900\uc120"].iloc[-1]) and (df["\uc804\ud658\uc120"].iloc[-2] <= df["\uae30\uc900\uc120"].iloc[-2]))
-
-    if result["\uc77c\ubaa9_\ucd5c\uc800\uc810"]:
-        result["\uc77c\ubaa9_\ud574\uc11d"] = "\uc804\ud658\uc120\uacfc \uae30\uc900\uc120\uc774 \ud3c9\ud569\ud558\uace0 \uad6c\ub984\ub300 \uc544\ub798 \uc704\uce58 \u2192 \ubcbd\ub2e4 \uc2dc\uadf8\ub110 \uac00\ub2a5"
-    elif result["\uc77c\ubaa9_\uace8\ub4dc\ud06c\ub85c\uc2a4"]:
-        result["\uc77c\ubaa9_\ud574\uc11d"] = "\uc804\ud658\uc120\uc774 \uae30\uc900\uc120\uc744 \uc0c1\ud5a5 \ub3cc\ud30c \u2192 \uc0c1\uc2b9 \ucd94\uc138 \uc804\ud658 \uac00\ub2a5"
-    else:
-        result["\uc77c\ubaa9_\ud574\uc11d"] = "\uc77c\ubaa9\uad00\uc5ed \ud2b9\uc774\uc810 \uc5c6\uc74c"
-
-    return result
-
-# ==================== FLASK APP ====================
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "\ud83d\udcc8 Kiwoom Signal Analysis API is live."
-
-@app.route("/analyze")
-def analyze():
-    symbol = request.args.get("symbol", "")
-    if not symbol:
-        return jsonify({"error": "\uc885\ub8cc\ucf54\ub4dc(symbol)\ub97c \uc785\ub825\ud574\uc8fc\uc138\uc694."}), 400
-    try:
-        df = get_ohlcv_kiwoom(symbol)
-        result = analyze_ichimoku(df)
-        return jsonify({
-            "\uc885\ub8cc\ucf54\ub4dc": symbol,
-            "\ud604\uc7ac\uac00": df["Close"].iloc[-1],
-            "\uae30\uc220\uc801_\ubd84\uc11d": result
-        })
-    except Exception as e:
-        return jsonify({"error": f"\uc11c\ubc84 \ub0b4\ubd80 \uc624\ub958: {str(e)}"}), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
-
+127.0.0.1 - - [18/May/2025:07:35:58 +0000] "HEAD / HTTP/1.1" 500 0 "-" "Go-http-client/1.1"
+UnicodeEncodeError: 'utf-8' codec can't encode characters in position 0-1: surrogates not allowed
+            ^^^^^^^^^^^^^^
+    value = value.encode()
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/werkzeug/wrappers/response.py", line 297, in set_data
+    self.set_data(response)
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/werkzeug/wrappers/response.py", line 175, in __init__
+         ^^^^^^^^^^^^^^^^^^^^
+    rv = self.response_class(
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/flask/app.py", line 1224, in make_response
+               ^^^^^^^^^^^^^^^^^^^^^^
+    response = self.make_response(rv)
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/flask/app.py", line 939, in finalize_request
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+    return self.finalize_request(rv)
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/flask/app.py", line 920, in full_dispatch_request
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    response = self.full_dispatch_request()
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/flask/app.py", line 1511, in wsgi_app
+Traceback (most recent call last):
+[2025-05-18 07:35:58,134] ERROR in app: Exception on / [HEAD]
+==> Your service is live 🎉
+[2025-05-18 07:35:57 +0000] [93] [INFO] Booting worker with pid: 93
+[2025-05-18 07:35:57 +0000] [85] [INFO] Using worker: sync
+[2025-05-18 07:35:57 +0000] [85] [INFO] Listening at: http://0.0.0.0:10000 (85)
+[2025-05-18 07:35:57 +0000] [85] [INFO] Starting gunicorn 23.0.0
+==> Running 'gunicorn signal_analysis_kiwoom:app --bind 0.0.0.0:10000'
+==> Deploying...
+==> Build successful 🎉
+==> Uploaded in 4.9s. Compression took 1.5s
+==> Uploading build...
+[notice] To update, run: pip install --upgrade pip
+[notice] A new release of pip is available: 24.0 -> 25.1.1
+Successfully installed blinker-1.9.0 certifi-2025.4.26 charset-normalizer-3.4.2 click-8.2.0 flask-3.1.1 gunicorn-23.0.0 idna-3.10 itsdangerous-2.2.0 jinja2-3.1.6 markupsafe-3.0.2 numpy-2.2.6 packaging-25.0 pandas-2.2.3 python-dateutil-2.9.0.post0 pytz-2025.2 requests-2.32.3 six-1.17.0 ta-0.11.0 tzdata-2025.2 urllib3-2.4.0 werkzeug-3.1.3
+Installing collected packages: pytz, urllib3, tzdata, six, packaging, numpy, markupsafe, itsdangerous, idna, click, charset-normalizer, certifi, blinker, werkzeug, requests, python-dateutil, jinja2, gunicorn, pandas, flask, ta
+Using cached six-1.17.0-py2.py3-none-any.whl (11 kB)
+Using cached packaging-25.0-py3-none-any.whl (66 kB)
+Using cached werkzeug-3.1.3-py3-none-any.whl (224 kB)
+Using cached urllib3-2.4.0-py3-none-any.whl (128 kB)
+Using cached tzdata-2025.2-py2.py3-none-any.whl (347 kB)
+Using cached pytz-2025.2-py2.py3-none-any.whl (509 kB)
+Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Using cached numpy-2.2.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (16.8 MB)
+Using cached MarkupSafe-3.0.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (23 kB)
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Using cached itsdangerous-2.2.0-py3-none-any.whl (16 kB)
+Using cached idna-3.10-py3-none-any.whl (70 kB)
+Using cached click-8.2.0-py3-none-any.whl (102 kB)
+Using cached charset_normalizer-3.4.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (147 kB)
+Using cached certifi-2025.4.26-py3-none-any.whl (159 kB)
+Using cached blinker-1.9.0-py3-none-any.whl (8.5 kB)
+Using cached gunicorn-23.0.0-py3-none-any.whl (85 kB)
+Using cached requests-2.32.3-py3-none-any.whl (64 kB)
+Using cached pandas-2.2.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (13.1 MB)
+Using cached flask-3.1.1-py3-none-any.whl (103 kB)
+  Using cached six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Collecting six>=1.5 (from python-dateutil>=2.8.2->pandas->-r requirements.txt (line 2))
+  Using cached packaging-25.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting packaging (from gunicorn->-r requirements.txt (line 5))
+  Using cached certifi-2025.4.26-py3-none-any.whl.metadata (2.5 kB)
+Collecting certifi>=2017.4.17 (from requests->-r requirements.txt (line 4))
+  Using cached urllib3-2.4.0-py3-none-any.whl.metadata (6.5 kB)
+Collecting urllib3<3,>=1.21.1 (from requests->-r requirements.txt (line 4))
+  Using cached idna-3.10-py3-none-any.whl.metadata (10 kB)
+Collecting idna<4,>=2.5 (from requests->-r requirements.txt (line 4))
+  Using cached charset_normalizer-3.4.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (35 kB)
+Collecting charset-normalizer<4,>=2 (from requests->-r requirements.txt (line 4))
+  Using cached tzdata-2025.2-py2.py3-none-any.whl.metadata (1.4 kB)
+Collecting tzdata>=2022.7 (from pandas->-r requirements.txt (line 2))
+  Using cached pytz-2025.2-py2.py3-none-any.whl.metadata (22 kB)
+Collecting pytz>=2020.1 (from pandas->-r requirements.txt (line 2))
+  Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting python-dateutil>=2.8.2 (from pandas->-r requirements.txt (line 2))
+  Using cached numpy-2.2.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (62 kB)
+Collecting numpy>=1.23.2 (from pandas->-r requirements.txt (line 2))
+  Using cached werkzeug-3.1.3-py3-none-any.whl.metadata (3.7 kB)
+Collecting werkzeug>=3.1.0 (from flask->-r requirements.txt (line 1))
+  Using cached MarkupSafe-3.0.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.0 kB)
+Collecting markupsafe>=2.1.1 (from flask->-r requirements.txt (line 1))
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Collecting jinja2>=3.1.2 (from flask->-r requirements.txt (line 1))
+  Using cached itsdangerous-2.2.0-py3-none-any.whl.metadata (1.9 kB)
+Collecting itsdangerous>=2.2.0 (from flask->-r requirements.txt (line 1))
+  Using cached click-8.2.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting click>=8.1.3 (from flask->-r requirements.txt (line 1))
+  Using cached blinker-1.9.0-py3-none-any.whl.metadata (1.6 kB)
+Collecting blinker>=1.9.0 (from flask->-r requirements.txt (line 1))
+  Using cached gunicorn-23.0.0-py3-none-any.whl.metadata (4.4 kB)
+Collecting gunicorn (from -r requirements.txt (line 5))
+  Using cached requests-2.32.3-py3-none-any.whl.metadata (4.6 kB)
+Collecting requests (from -r requirements.txt (line 4))
+  Using cached ta-0.11.0-py3-none-any.whl
+Collecting ta (from -r requirements.txt (line 3))
+  Using cached pandas-2.2.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (89 kB)
+Collecting pandas (from -r requirements.txt (line 2))
+  Using cached flask-3.1.1-py3-none-any.whl.metadata (3.0 kB)
+Collecting flask (from -r requirements.txt (line 1))
+==> Running build command 'pip install -r requirements.txt'...
+==> Docs on specifying a Poetry version: https://render.com/docs/poetry-version
+==> Using Poetry version 1.7.1 (default)
+==> Docs on specifying a Python version: https://render.com/docs/python-version
+==> Using Python version 3.11.11 (default)
+==> Transferred 138MB in 7s. Extraction took 3s.
+==> Downloading cache...
+==> Checking out commit 43cae0d8a177df64669b2dc16ce553f641e7da07 in branch main
+==> Cloning from https://github.com/jey623/stock-predict-api
