@@ -1,6 +1,0 @@
-flask
-gunicorn
-ta
-pandas
-numpy
-finance-datareader==0.9.96
