@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import ta
 from flask import Flask, request, jsonify
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -103,7 +103,8 @@ def home():
 @app.route("/analyze")
 def analyze():
     code = request.args.get("symbol", "005930")
-    today = datetime.today().strftime("%Y%m%d")
+    # ✅ 한국 시간 기준으로 하루 전 날짜 사용 (UTC 기준 Render 대비)
+    today = (datetime.today() - timedelta(days=1)).strftime("%Y%m%d")
     try:
         token = get_token()
         df = request_kiwoom_daily_data(token, code, today)
