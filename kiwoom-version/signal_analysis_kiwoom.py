@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# 🔐 환경변수에서 키 불러오기
+# 🔐 환경변수에서 API 키 불러오기
 def load_keys():
     app_key = os.getenv("APP_KEY")
     app_secret = os.getenv("APP_SECRET")
@@ -17,7 +17,7 @@ def load_keys():
 APP_KEY, APP_SECRET = load_keys()
 ACCESS_TOKEN = None
 
-# 🔁 토큰 발급
+# 🔁 액세스 토큰 발급
 def get_access_token():
     global ACCESS_TOKEN
     if ACCESS_TOKEN:
@@ -35,7 +35,7 @@ def get_access_token():
         return ACCESS_TOKEN
     raise Exception(f"❌ 토큰 발급 실패: {res.status_code} {res.text}")
 
-# 📊 일봉 데이터 조회
+# 📊 키움 일봉 조회
 def get_ohlcv_kiwoom(code, start_date="20140101"):
     token = get_access_token()
     url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
@@ -141,8 +141,7 @@ def analyze_e_book_signals(df):
 def analyze_stock(symbol):
     df = get_ohlcv_kiwoom(symbol)
     if df.empty:
-        return {"error": "❌ 데이터 없음 또는 종목코드 오류"}
-
+        raise ValueError("❌ 데이터 없음 또는 종목코드 오류")
     cur = df["Close"].iloc[-1]
     future, change = {}, {}
     for d in [1, 5, 10, 20, 40, 60, 80]:
@@ -158,20 +157,23 @@ def analyze_stock(symbol):
         "기술적_분석": analyze_e_book_signals(df)
     }
 
-# 🌐 라우터
+# 🌐 라우팅
 @app.route("/")
-def index():
-    return "📈 Kiwoom REST API + Ichimoku Analysis API is running."
+def home():
+    return "📈 Kiwoom API + Ichimoku Analysis API is running."
 
 @app.route("/analyze")
 def api_analyze():
-    symbol = request.args.get("symbol", "")
+    symbol = request.args.get("symbol", "").strip()
     if not symbol:
-        return jsonify({"error": "symbol 파라미터가 필요합니다"}), 400
-    return jsonify(analyze_stock(symbol))
+        return jsonify({"error": "symbol 파라미터가 필요합니다."}), 400
+
+    try:
+        result = analyze_stock(symbol)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"서버 내부 오류: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
-
 
