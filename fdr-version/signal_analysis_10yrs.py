@@ -24,10 +24,8 @@ def _parse_params(q):
 def analyze_e_book_signals(df):
     result = {}
 
-    df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
-    df['MA120'] = df['Close'].rolling(window=120).mean()
 
     result['지지선'] = round(df['Close'].rolling(window=20).min().iloc[-1], 2)
     result['저항선'] = round(df['Close'].rolling(window=20).max().iloc[-1], 2)
@@ -37,15 +35,21 @@ def analyze_e_book_signals(df):
     result['골든크로스'] = bool(golden.iloc[-1])
     result['데드크로스'] = bool(dead.iloc[-1])
 
-    for ma, label in zip(['MA20', 'MA60', 'MA120'], ['이격도_20일', '이격도_60일', '이격도_120일']):
-        disparity = (df['Close'] / df[ma]) * 100
-        val = disparity.iloc[-1]
+    disparity_20 = (df['Close'] / df['MA20']) * 100
+    disparity_60 = (df['Close'] / df['MA60']) * 100
+    d20 = disparity_20.iloc[-1]
+    d60 = disparity_60.iloc[-1]
+
+    def classify_disparity(val):
         if val < 92:
-            result[label] = f"과매도({val:.1f}%)"
+            return f"과매도({val:.1f}%)"
         elif val > 102:
-            result[label] = f"과매수({val:.1f}%)"
+            return f"과매수({val:.1f}%)"
         else:
-            result[label] = f"중립({val:.1f}%)"
+            return f"중립({val:.1f}%)"
+
+    result['이격도_20일'] = classify_disparity(d20)
+    result['이격도_60일'] = classify_disparity(d60)
 
     obv_indicator = ta.volume.OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume'])
     obv = obv_indicator.on_balance_volume()
@@ -59,6 +63,7 @@ def analyze_e_book_signals(df):
     else:
         result['OBV_분석'] = "OBV와 주가 방향 일치"
 
+    # 일목균형표 계산 (전자책 1권 + 2권 반영)
     nine_high = df['High'].rolling(window=9).max()
     nine_low = df['Low'].rolling(window=9).min()
     df['전환선'] = (nine_high + nine_low) / 2
@@ -85,24 +90,73 @@ def analyze_e_book_signals(df):
     else:
         result['일목_해석'] = "일목균형표 기준 특이점 없음"
 
-    result['박스권_형성'] = False
-    result['박스권_돌파'] = False
-    for box_period in range(10, 61, 10):
-        box_high = df['High'].rolling(window=box_period).max().iloc[-2]
-        box_low = df['Low'].rolling(window=box_period).min().iloc[-2]
-        box_range = (box_high - box_low) / box_low
-        close = df['Close'].iloc[-1]
-
-        if box_range < 0.10:
-            result['박스권_형성'] = True
-            if close > box_high * 1.02:
-                result['박스권_돌파'] = True
-                result['박스권_해석'] = f"{box_period}일 박스권({box_low:.2f}~{box_high:.2f}) 돌파"
-                break
-            else:
-                result['박스권_해석'] = f"{box_period}일 박스권 내 형성 중"
-                break
-
     return result
 
+def analyze_stock(symbol, **p):
+    code = symbol if symbol.isdigit() else _name2code(symbol)
+    name = _code2name(code) if symbol.isdigit() else symbol
+    if not code or pd.isna(code):
+        return {"error": "❌ 유효하지 않은 종목."}
 
+    df = fdr.DataReader(code, start="2014-01-01")
+    df = df.dropna().copy()
+
+    df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"], window=p["cci_period"]).cci()
+    df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=p["rsi_period"]).rsi()
+    adx = ta.trend.ADXIndicator(df["High"], df["Low"], df["Close"], window=p["di_period"])
+    df["DI+"], df["DI-"], df["ADX"] = adx.adx_pos(), adx.adx_neg(), adx.adx()
+
+    ma = df["Close"].rolling(p["env_len"]).mean()
+    envd = ma * (1 - p["env_pct"] / 100)
+    df["LowestEnv"] = envd.rolling(5).min()
+    df["LowestC"] = df["Close"].rolling(5).min()
+    df = df.dropna().copy()
+
+    df["Signal"] = (
+        (df["CCI"] < p["cci_th"]) &
+        (df["RSI"] < p["rsi_th"]) &
+        (df["DI-"] > p["hi"]) &
+        ((df["DI-"] < df["ADX"]) | (df["DI+"] < p["lo"])) &
+        (df["LowestEnv"] > df["LowestC"])
+    )
+
+    cur = float(df["Close"].iat[-1])
+    periods = [1, 5, 10, 20, 40, 60, 80]
+    future_prices, change = {}, {}
+
+    for d in periods:
+        future_price = df["Close"].shift(-d)
+        valid = ~future_price.isna()
+        returns = ((future_price[valid] - df["Close"][valid]) / df["Close"][valid] * 100)
+        if not returns.empty:
+            avg_ret = round(returns.mean(), 2)
+            pred_price = round(cur * (1 + avg_ret / 100), 2)
+            change[f"{d}일"] = avg_ret
+            future_prices[f"{d}일"] = pred_price
+
+    e_book_signals = analyze_e_book_signals(df)
+
+    return {
+        "종목명": name,
+        "종목코드": code,
+        "현재가": cur,
+        "예측가": future_prices,
+        "변화율": change,
+        "기술적_분석": e_book_signals
+    }
+
+@app.route("/")
+def home():
+    return "📈 Signal Analysis API is running."
+
+@app.route("/analyze")
+def api_analyze():
+    q = request.args
+    symbol = q.get("symbol", "")
+    if not symbol:
+        return jsonify({"error": "Need symbol"}), 400
+    data = analyze_stock(symbol, **_parse_params(q))
+    return jsonify(data)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
