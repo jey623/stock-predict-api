@@ -1,4 +1,7 @@
 import pandas as pd
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 def analyze_signal(df):
     result = {}
@@ -91,4 +94,12 @@ def analyze_signal(df):
         result['진입추천'] = '보류 또는 관망'
 
     return result
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    data = request.get_json()
+    df = pd.DataFrame(data)
+    result = analyze_signal(df)
+    return jsonify(result)
+
 
