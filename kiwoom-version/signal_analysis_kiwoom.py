@@ -1,126 +1,94 @@
-import os
-import requests
 import pandas as pd
-import numpy as np
-import ta
-from flask import Flask, request, jsonify
-from datetime import datetime, timedelta
 
-app = Flask(__name__)
-
-# ----------------------------- ✅ 환경변수에서 키 불러오기 -----------------------------
-def load_keys():
-    app_key = os.environ.get("APP_KEY", "").strip()
-    app_secret = os.environ.get("APP_SECRET", "").strip()
-    if not app_key or not app_secret:
-        raise Exception("❌ 환경변수 APP_KEY 또는 APP_SECRET이 누락되었습니다.")
-    return app_key, app_secret
-
-APP_KEY, APP_SECRET = load_keys()
-
-# ----------------------------- ✅ 토큰 발급 함수 -----------------------------
-def get_token():
-    url = "https://api.kiwoom.com/oauth2/token"
-    headers = {"Content-Type": "application/json;charset=UTF-8"}
-    data = {
-        "grant_type": "client_credentials",
-        "appkey": APP_KEY,
-        "secretkey": APP_SECRET
-    }
-    r = requests.post(url, headers=headers, json=data)
-    if r.status_code != 200:
-        raise Exception(f"❌ 토큰 발급 실패: {r.status_code} {r.text}")
-    return r.json().get("token")
-
-# ----------------------------- ✅ 일별 주가 요청 (ka10086) -----------------------------
-def request_kiwoom_daily_data(token, code, qry_date, indc_tp='0'):
-    url = "https://api.kiwoom.com/api/dostk/mrkcond"
-    headers = {
-        "Content-Type": "application/json;charset=UTF-8",
-        "authorization": f"Bearer {token}",
-        "api-id": "ka10086",
-        "cont-yn": "N",
-        "next-key": ""
-    }
-    data = {
-        "stk_cd": code,
-        "qry_dt": qry_date,
-        "indc_tp": indc_tp
-    }
-    r = requests.post(url, headers=headers, json=data)
-    if r.status_code != 200:
-        raise Exception(f"❌ 요청 실패: {r.status_code}, {r.text}")
-    js = r.json()
-    if "daly_stkpc" not in js or not js["daly_stkpc"]:
-        raise Exception(f"❌ 데이터 없음 또는 형식 오류: {js}")
-    df = pd.DataFrame(js["daly_stkpc"])
-    df.rename(columns={
-        "date": "Date", "open_pric": "Open", "high_pric": "High",
-        "low_pric": "Low", "close_pric": "Close", "trde_qty": "Volume"
-    }, inplace=True)
-    df[["Open", "High", "Low", "Close", "Volume"]] = df[["Open", "High", "Low", "Close", "Volume"]].apply(pd.to_numeric, errors='coerce')
-    df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d")
-    df = df.sort_values("Date").reset_index(drop=True)
-    return df.tail(300)
-
-# ----------------------------- ✅ 기술적 분석 함수 -----------------------------
-def analyze_e_book_signals(df):
-    df["MA20"] = df["Close"].rolling(window=20).mean()
-    df["MA60"] = df["Close"].rolling(window=60).mean()
-    df["DIS20"] = (df["Close"] / df["MA20"]) * 100
-    df["OBV"] = ta.volume.OnBalanceVolumeIndicator(df["Close"], df["Volume"]).on_balance_volume()
-    df.dropna(inplace=True)
-
-    if len(df) < 2:
-        return {
-            "error": "분석 가능한 데이터가 부족합니다 (2개 미만)."
-        }
-
-    return {
-        "골든크로스": bool((df["MA20"].iloc[-2] < df["MA60"].iloc[-2]) and (df["MA20"].iloc[-1] > df["MA60"].iloc[-1])),
-        "데드크로스": bool((df["MA20"].iloc[-2] > df["MA60"].iloc[-2]) and (df["MA20"].iloc[-1] < df["MA60"].iloc[-1])),
-        "이격도": f"{df['DIS20'].iloc[-1]:.2f}%",
-        "OBV_방향": "상승" if df['OBV'].iloc[-1] > df['OBV'].iloc[-2] else "하락",
-    }
-
-# ----------------------------- ✅ 예측 계산 -----------------------------
-def calculate_predictions(df):
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
-    df.dropna(subset=["Close"], inplace=True)
+def analyze_signal(df):
     result = {}
-    for days in [1, 5, 10, 20, 40, 60, 80]:
-        if len(df) > days:
-            change = ((df["Close"].iloc[-1] - df["Close"].iloc[-days]) / df["Close"].iloc[-days]) * 100
-            result[f"{days}일변화율"] = round(change, 2)
-            result[f"{days}일예측가"] = round(df["Close"].iloc[-1] * (1 + change / 100), 2)
+
+    # 이동평균선 계산
+    ma5 = df["Close"].rolling(window=5).mean()
+    ma20 = df["Close"].rolling(window=20).mean()
+
+    # OBV 계산
+    obv = [0]
+    for i in range(1, len(df)):
+        if df["Close"][i] > df["Close"][i - 1]:
+            obv.append(obv[-1] + df["Volume"][i])
+        elif df["Close"][i] < df["Close"][i - 1]:
+            obv.append(obv[-1] - df["Volume"][i])
+        else:
+            obv.append(obv[-1])
+    df["OBV"] = obv
+
+    # OBV 트렌드
+    obv_trend = df["OBV"].iloc[-1] - df["OBV"].iloc[-5]
+    price_trend = df["Close"].iloc[-1] - df["Close"].iloc[-5]
+
+    score = 0
+    if obv_trend > 0 and price_trend < 0:
+        result['OBV_분석'] = "OBV 유지, 주가 하락 → 매집 가능성"
+        score += 1
+    elif obv_trend > 0:
+        result['OBV_분석'] = "OBV 상승 → 세력 매집 중일 가능성"
+        score += 1
+    else:
+        result['OBV_분석'] = "OBV 감소 → 세력 이탈 가능성"
+
+    # 이평선 분석
+    if ma5.iloc[-1] > ma20.iloc[-1] and ma5.iloc[-1] > ma5.iloc[-3] and ma20.iloc[-1] > ma20.iloc[-3]:
+        result["이평선분석"] = "5일선 > 20일선, 둘 다 상승"
+        score += 1
+    else:
+        result["이평선분석"] = "이평선 약세 또는 하락 전환"
+
+    # CCI 계산
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    cci = (tp - tp.rolling(20).mean()) / (0.015 * tp.rolling(20).std())
+    cci_value = round(cci.iloc[-1], 2)
+    result["CCI"] = cci_value
+    if 50 < cci_value < 150:
+        score += 1
+
+    # 봉 형태 판단
+    candle = df.iloc[-1]
+    body = abs(candle["Close"] - candle["Open"])
+    avg_range = (df["High"] - df["Low"]).mean()
+    is_bull_short = (candle["Close"] > candle["Open"]) and (body < avg_range * 0.5)
+    is_bear = candle["Close"] < candle["Open"]
+    if is_bull_short or is_bear:
+        result["캔들조건"] = "음봉 또는 짧은 양봉"
+        score += 1
+    else:
+        result["캔들조건"] = "비적합"
+
+    result['기술점수'] = f"{score} / 4"
+
+    # 1~5일 수익률 예측
+    future_returns = {}
+    returns_list = []
+    for day in range(1, 6):
+        future_price = df["Close"].shift(-day)
+        valid = ~future_price.isnull()
+        returns = ((future_price[valid] - df["Close"][valid]) / df["Close"][valid]) * 100
+        avg_return = round(returns.mean(), 2)
+        future_returns[f"{day}일"] = avg_return
+        returns_list.append(avg_return)
+
+    result["단기예측"] = future_returns
+
+    # 예측 방향성
+    if returns_list == sorted(returns_list):
+        result['예측추세'] = "우상향"
+    elif returns_list == sorted(returns_list, reverse=True):
+        result['예측추세'] = "우하향"
+    else:
+        result['예측추세'] = "불규칙"
+
+    # 진입 추천 판단
+    if score >= 3 and future_returns['3일'] > 2.0:
+        result['진입추천'] = '강하게 추천 🔥'
+    elif score >= 2 and future_returns['3일'] > 1.0:
+        result['진입추천'] = '가능'
+    else:
+        result['진입추천'] = '보류 또는 관망'
+
     return result
-
-# ----------------------------- ✅ API 엔드포인트 -----------------------------
-@app.route("/")
-def home():
-    return "✅ Signal Analysis API is running."
-
-@app.route("/analyze")
-def analyze():
-    code = request.args.get("symbol", "005930")
-    # ✅ 한국 시간 기준으로 하루 전 날짜 사용 (UTC 기준 Render 대비)
-    today = (datetime.today() - timedelta(days=1)).strftime("%Y%m%d")
-    try:
-        token = get_token()
-        df = request_kiwoom_daily_data(token, code, today)
-        tech = analyze_e_book_signals(df)
-
-        if isinstance(tech, dict) and "error" in tech:
-            return jsonify({"error": tech["error"]})
-
-        pred = calculate_predictions(df)
-        return jsonify({
-            "기술적분석": tech,
-            "변화율_및_예측가": pred
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
 
