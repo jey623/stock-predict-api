@@ -1,82 +1,70 @@
-from flask import Flask, request, jsonify
-import pandas as pd
-import FinanceDataReader as fdr
-from datetime import datetime, timedelta
+# 최종 버전: 수익률 기반 + 기술 지표 보조 조건 퀀트 스캐너
+
+from datetime import datetime
+import pandas as pd, FinanceDataReader as fdr, ta
+from flask import Flask, jsonify
 
 app = Flask(__name__)
+krx = fdr.StockListing("KRX")
 
-# 분석 함수 정의
-def analyze_signal(df):
-    result = {}
+def _code2name(code):
+    return krx.loc[krx["Code"] == code, "Name"].squeeze()
 
-    ma5 = df["Close"].rolling(window=5).mean()
-    ma20 = df["Close"].rolling(window=20).mean()
-
-    obv = [0]
-    for i in range(1, len(df)):
-        if df["Close"][i] > df["Close"][i - 1]:
-            obv.append(obv[-1] + df["Volume"][i])
-        elif df["Close"][i] < df["Close"][i - 1]:
-            obv.append(obv[-1] - df["Volume"][i])
-        else:
-            obv.append(obv[-1])
-    df["OBV"] = obv
-
-    obv_trend = df["OBV"].iloc[-1] - df["OBV"].iloc[-5]
-    price_trend = df["Close"].iloc[-1] - df["Close"].iloc[-5]
-
-    if obv_trend > 0 and price_trend < 0:
-        result['OBV_분석'] = "OBV 유지, 주가 하락 → 매집 가능성"
-    elif obv_trend > 0:
-        result['OBV_분석'] = "OBV 상승 → 세력 매집 중일 가능성"
-    else:
-        result['OBV_분석'] = "OBV 감소 → 세력 이탈 가능성"
-
-    if ma5.iloc[-1] > ma20.iloc[-1] and ma5.iloc[-1] > ma5.iloc[-3] and ma20.iloc[-1] > ma20.iloc[-3]:
-        result["이평선분석"] = "5일선 > 20일선, 둘 다 상승"
-    else:
-        result["이평선분석"] = "이평선 약세 또는 하락 전환"
-
-    tp = (df["High"] + df["Low"] + df["Close"]) / 3
-    cci = (tp - tp.rolling(20).mean()) / (0.015 * tp.rolling(20).std())
-    result["CCI"] = round(cci.iloc[-1], 2)
-
-    candle = df.iloc[-1]
-    body = abs(candle["Close"] - candle["Open"])
-    avg_range = (df["High"] - df["Low"]).mean()
-    is_bull_short = (candle["Close"] > candle["Open"]) and (body < avg_range * 0.5)
-    is_bear = candle["Close"] < candle["Open"]
-    result["캔들조건"] = "음봉 또는 짧은 양봉" if is_bull_short or is_bear else "비적합"
-
-    future_returns = {}
-    for day in range(1, 6):
-        future_price = df["Close"].shift(-day)
-        valid = ~future_price.isnull()
-        returns = ((future_price[valid] - df["Close"][valid]) / df["Close"][valid]) * 100
-        future_returns[f"{day}일"] = round(returns.mean(), 2)
-
-    result["단기예측"] = future_returns
-
-    return result
-
-@app.route('/analyze', methods=['GET'])
-def analyze_from_symbol():
-    symbol = request.args.get('symbol')
-    if not symbol:
-        return jsonify({"error": "symbol 파라미터가 필요합니다"}), 400
-
-    start_date = (datetime.now() - timedelta(days=3650)).strftime("%Y-%m-%d")
-    df = fdr.DataReader(symbol, start=start_date)
-    df = df.reset_index()
-
+def analyze_stock(code):
     try:
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-        result = analyze_signal(df)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)})
+        df = fdr.DataReader(code, start="2014-01-01").dropna()
+        cur = float(df["Close"].iloc[-1])
 
-if __name__ == '__main__':
-    app.run(debug=True)
+        # 기본 수익률 계산
+        future = df["Close"].shift(-5)
+        valid = ~future.isna()
+        returns = ((future[valid] - df["Close"][valid]) / df["Close"][valid]) * 100
+        if returns.empty:
+            return None
 
+        avg_ret = round(returns.mean(), 2)
+        if avg_ret < 3:
+            return None  # 5일 수익률이 3% 미만이면 제외
+
+        # 기술 지표 보조 조건
+        df = df.copy()
+        df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=14).rsi()
+        df["OBV"] = ta.volume.OnBalanceVolumeIndicator(df["Close"], df["Volume"]).on_balance_volume()
+
+        rsi = df["RSI"].iloc[-1]
+        obv_trend = df["OBV"].rolling(window=3).mean().iloc[-1] - df["OBV"].rolling(window=3).mean().iloc[-2]
+
+        # RSI 과열 제외, OBV 하락 제외
+        if rsi > 70 or obv_trend < 0:
+            return None
+
+        return {
+            "code": code,
+            "name": _code2name(code),
+            "close": cur,
+            "5일예상수익률(%)": avg_ret,
+            "RSI": round(rsi, 2),
+            "OBV추세": round(obv_trend, 2)
+        }
+    except:
+        return None
+
+def scan_stocks():
+    results = []
+    for code in krx["Code"][:300]:
+        r = analyze_stock(code)
+        if r:
+            results.append(r)
+
+    # 수익률 기준 정렬
+    results.sort(key=lambda x: x["5일예상수익률(%)"], reverse=True)
+    return results[:10]
+
+@app.route("/scan")
+def api_scan():
+    data = scan_stocks()
+    return jsonify(data)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
 
