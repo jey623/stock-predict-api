@@ -1,3 +1,4 @@
+# signal_analysis_kiwoom.py
 from flask import Flask, request, jsonify
 import pandas as pd
 import FinanceDataReader as fdr
@@ -7,9 +8,6 @@ import datetime
 import os
 
 app = Flask(__name__)
-
-# 거래일 계산용 사용자 정의 영업일
-kr_bday = pd.offsets.CustomBusinessDay(weekmask='Mon Tue Wed Thu Fri')
 
 def get_technical_indicators(df):
     df = df.copy()
@@ -25,26 +23,34 @@ def get_technical_indicators(df):
 
 def predict_next_prices(df, days=5):
     df = df.copy()
-    df['Target'] = df['Close'].shift(-1)
+    df['Target'] = df['Close'].shift(-days)
     df = df.dropna()
     features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
     X = df[features]
     y = df['Target']
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
-    
+
+    last_index = df.index.get_loc(df.index[-1])
     preds = []
-    last_row = df.iloc[-1:][features]
-    last_date = df.index[-1]
-
     for i in range(days):
-        pred = model.predict(last_row)[0]
+        last_row = df.iloc[[last_index]].copy()
+        pred = model.predict(last_row[features])[0]
         preds.append(pred)
-        # 모의 업데이트 (다음 예측을 위해 입력값 일부 갱신)
-        last_row.iloc[0]['Close'] = pred
 
-    future_dates = [(last_date + kr_bday * (i+1)).strftime('%Y-%m-%d') for i in range(days)]
-    results = [{'날짜': d, '예측종가': round(float(p))} for d, p in zip(future_dates, preds)]
+        # 다음 날 기술지표 업데이트를 위한 임의 추가
+        new_row = last_row.copy()
+        new_row['Close'] = pred
+        new_row['Volume'] = last_row['Volume'].values[0]  # 기존 거래량 유지
+        df = pd.concat([df, new_row])
+        df = get_technical_indicators(df)
+        last_index = df.index.get_loc(df.index[-1])
+
+    start_date = df.index[-days-1]
+    results = []
+    for i, val in enumerate(preds, 1):
+        next_date = (start_date + pd.tseries.offsets.BDay(i)).strftime('%Y-%m-%d')
+        results.append({'날짜': next_date, '예측종가': int(val)})
     return results
 
 @app.route('/full_analysis', methods=['GET'])
@@ -66,16 +72,19 @@ def full_analysis():
         return jsonify({'error': '데이터 조회 실패'}), 404
 
     df_ti = get_technical_indicators(df)
-    indicators = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
+    indicators = df_ti[['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].dropna().tail(30)
+    indicator_json = indicators.reset_index().rename(columns={'index': '날짜'}).to_dict(orient='records')
+
     preds = predict_next_prices(df_ti, days=5)
 
     return jsonify({
         'symbol': symbol,
         'period_years': period,
-        '기술지표': {k: float(v) for k, v in indicators.items()},
+        '기술지표_최근30일': indicator_json,
         '예측종가_5거래일': preds
     })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+
 
