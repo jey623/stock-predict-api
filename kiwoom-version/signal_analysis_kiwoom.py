@@ -1,8 +1,8 @@
-# 최종 버전: 수익률 기반 + 기술 지표 보조 조건 퀀트 스캐너
+# 최종버전: 사용자가 종목 입력 → 5거래일 내 익절(+3%), 손절(−3%) 확률 분석 API
 
 from datetime import datetime
-import pandas as pd, FinanceDataReader as fdr, ta
-from flask import Flask, jsonify
+import pandas as pd, FinanceDataReader as fdr
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 krx = fdr.StockListing("KRX")
@@ -10,61 +10,61 @@ krx = fdr.StockListing("KRX")
 def _code2name(code):
     return krx.loc[krx["Code"] == code, "Name"].squeeze()
 
-def analyze_stock(code):
+def _name2code(name):
+    return krx.loc[krx["Name"] == name, "Code"].squeeze()
+
+def analyze_stock_prob(code):
     try:
-        df = fdr.DataReader(code, start="2014-01-01").dropna()
+        df = fdr.DataReader(code, start="2014-01-01").dropna().copy()
+        df.reset_index(inplace=True)
+
+        count_total = 0
+        count_take = 0  # 익절
+        count_stop = 0  # 손절
+
+        for i in range(len(df) - 5):
+            entry = df.loc[i, "Close"]
+            high5 = df.loc[i+1:i+5, "High"].max()
+            low5 = df.loc[i+1:i+5, "Low"].min()
+
+            target_up = entry * 1.03
+            target_down = entry * 0.97
+
+            count_total += 1
+            if high5 >= target_up:
+                count_take += 1
+            if low5 <= target_down:
+                count_stop += 1
+
+        prob_take = round((count_take / count_total) * 100, 2)
+        prob_stop = round((count_stop / count_total) * 100, 2)
+
         cur = float(df["Close"].iloc[-1])
 
-        # 기본 수익률 계산
-        future = df["Close"].shift(-5)
-        valid = ~future.isna()
-        returns = ((future[valid] - df["Close"][valid]) / df["Close"][valid]) * 100
-        if returns.empty:
-            return None
-
-        avg_ret = round(returns.mean(), 2)
-        if avg_ret < 3:
-            return None  # 5일 수익률이 3% 미만이면 제외
-
-        # 기술 지표 보조 조건
-        df = df.copy()
-        df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=14).rsi()
-        df["OBV"] = ta.volume.OnBalanceVolumeIndicator(df["Close"], df["Volume"]).on_balance_volume()
-
-        rsi = df["RSI"].iloc[-1]
-        obv_trend = df["OBV"].rolling(window=3).mean().iloc[-1] - df["OBV"].rolling(window=3).mean().iloc[-2]
-
-        # RSI 과열 제외, OBV 하락 제외
-        if rsi > 70 or obv_trend < 0:
-            return None
-
         return {
-            "code": code,
-            "name": _code2name(code),
-            "close": cur,
-            "5일예상수익률(%)": avg_ret,
-            "RSI": round(rsi, 2),
-            "OBV추세": round(obv_trend, 2)
+            "종목명": _code2name(code),
+            "종목코드": code,
+            "현재가": cur,
+            "익절기준(+3%)": round(cur * 1.03, 2),
+            "손절기준(−3%)": round(cur * 0.97, 2),
+            "5거래일 내 익절확률(%)": prob_take,
+            "5거래일 내 손절확률(%)": prob_stop
         }
     except:
         return None
 
-def scan_stocks():
-    results = []
-    for code in krx["Code"][:300]:
-        r = analyze_stock(code)
-        if r:
-            results.append(r)
+@app.route("/analyze")
+def api_analyze():
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol 파라미터가 필요합니다."}), 400
 
-    # 수익률 기준 정렬
-    results.sort(key=lambda x: x["5일예상수익률(%)"], reverse=True)
-    return results[:10]
+    code = symbol if symbol.isdigit() else _name2code(symbol)
+    if not code:
+        return jsonify({"error": "유효한 종목명 또는 코드가 아닙니다."}), 404
 
-@app.route("/scan")
-def api_scan():
-    data = scan_stocks()
-    return jsonify(data)
+    result = analyze_stock_prob(code)
+    return jsonify(result or {"message": "분석에 실패했습니다."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
