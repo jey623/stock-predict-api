@@ -1,25 +1,24 @@
 # signal_analysis_kiwoom.py
-
 from flask import Flask, request, jsonify
 import pandas as pd
 import FinanceDataReader as fdr
-import talib
-import numpy as np
+import ta
 from sklearn.ensemble import RandomForestRegressor
 import datetime
+import os
 
 app = Flask(__name__)
 
 def get_technical_indicators(df):
     df = df.copy()
-    df['RSI'] = talib.RSI(df['Close'], timeperiod=14)
-    df['CCI'] = talib.CCI(df['High'], df['Low'], df['Close'], timeperiod=20)
-    df['OBV'] = talib.OBV(df['Close'], df['Volume'])
-    df['Disparity'] = df['Close'] / talib.MA(df['Close'], timeperiod=5) * 100
-    df['MA5'] = talib.MA(df['Close'], timeperiod=5)
-    df['MA20'] = talib.MA(df['Close'], timeperiod=20)
-    df['MA60'] = talib.MA(df['Close'], timeperiod=60)
-    df['MA120'] = talib.MA(df['Close'], timeperiod=120)
+    df['RSI'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
+    df['CCI'] = ta.trend.CCIIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=20).cci()
+    df['OBV'] = ta.volume.OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume']).on_balance_volume()
+    df['Disparity'] = df['Close'] / df['Close'].rolling(window=5).mean() * 100
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA60'] = df['Close'].rolling(window=60).mean()
+    df['MA120'] = df['Close'].rolling(window=120).mean()
     return df.dropna()
 
 def predict_next_prices(df, days=5):
@@ -36,8 +35,6 @@ def predict_next_prices(df, days=5):
     for i in range(days):
         pred = model.predict(last_row)[0]
         preds.append(pred)
-        # update features for next day
-        last_row = last_row.shift(1)
         last_row.iloc[0] = pred
     start_date = df.index[-1]
     results = []
