@@ -23,35 +23,22 @@ def get_technical_indicators(df):
 
 def predict_next_prices(df, days=5):
     df = df.copy()
-    df['Target'] = df['Close'].shift(-days)
+    df['Target'] = df['Close'].shift(-1)
     df = df.dropna()
     features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
     X = df[features]
     y = df['Target']
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
-
-    last_index = df.index.get_loc(df.index[-1])
+    last_row = df.iloc[-1:][features].copy()
     preds = []
-    for i in range(days):
-        last_row = df.iloc[[last_index]].copy()
-        pred = model.predict(last_row[features])[0]
-        preds.append(pred)
-
-        # 다음 날 기술지표 업데이트를 위한 임의 추가
-        new_row = last_row.copy()
-        new_row['Close'] = pred
-        new_row['Volume'] = last_row['Volume'].values[0]  # 기존 거래량 유지
-        df = pd.concat([df, new_row])
-        df = get_technical_indicators(df)
-        last_index = df.index.get_loc(df.index[-1])
-
-    start_date = df.index[-days-1]
-    results = []
-    for i, val in enumerate(preds, 1):
-        next_date = (start_date + pd.tseries.offsets.BDay(i)).strftime('%Y-%m-%d')
-        results.append({'날짜': next_date, '예측종가': int(val)})
-    return results
+    next_date = df.index[-1]
+    for _ in range(days):
+        pred = model.predict(last_row)[0]
+        preds.append({'날짜': next_date.strftime('%Y-%m-%d'), '예측종가': int(pred)})
+        next_date = pd.date_range(next_date, periods=2, freq='B')[1]
+        last_row.iloc[0] = pred
+    return preds
 
 @app.route('/full_analysis', methods=['GET'])
 def full_analysis():
@@ -63,7 +50,7 @@ def full_analysis():
         return jsonify({'error': 'period는 1~10 사이의 정수여야 합니다'}), 400
 
     end = datetime.datetime.now()
-    start = end - datetime.timedelta(days=365*period)
+    start = end - datetime.timedelta(days=365 * period)
     try:
         df = fdr.DataReader(symbol, start, end)
     except Exception as e:
@@ -73,14 +60,12 @@ def full_analysis():
 
     df_ti = get_technical_indicators(df)
     indicators = df_ti[['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].dropna().tail(30)
-    indicator_json = indicators.reset_index().rename(columns={'index': '날짜'}).to_dict(orient='records')
-
     preds = predict_next_prices(df_ti, days=5)
 
     return jsonify({
         'symbol': symbol,
         'period_years': period,
-        '기술지표_최근30일': indicator_json,
+        '기술지표_최근30일': indicators.reset_index().to_dict(orient='records'),
         '예측종가_5거래일': preds
     })
 
