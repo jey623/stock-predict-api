@@ -1,25 +1,15 @@
-from flask import Flask, request, jsonify
-import FinanceDataReader as fdr
-import pandas as pd
-import ta
-import os
-
-app = Flask(__name__)
-krx = fdr.StockListing("KRX")
-
-def _code2name(code):
-    return krx.loc[krx["Code"] == code, "Name"].squeeze()
-
-def _name2code(name):
-    return krx.loc[krx["Name"] == name, "Code"].squeeze()
+import datetime
 
 def analyze_full_stock(code):
     try:
-        # ✅ 5년치로 변경
-        df = fdr.DataReader(code, start="2019-01-01").dropna().copy()
+        # ✅ 오늘 날짜 기준으로 2년 전부터의 데이터만 가져오기
+        end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.datetime.today() - datetime.timedelta(days=365*2)).strftime('%Y-%m-%d')
+        
+        df = fdr.DataReader(code, start=start_date, end=end_date).dropna().copy()
         df.reset_index(inplace=True)
 
-        # 기술 지표 계산
+        # 기술 지표 계산 (생략 없이 그대로 유지)
         df["RSI"] = ta.momentum.RSIIndicator(df["Close"], window=14).rsi()
         df["CCI"] = ta.trend.CCIIndicator(df["High"], df["Low"], df["Close"], window=20).cci()
         df["OBV"] = ta.volume.OnBalanceVolumeIndicator(df["Close"], df["Volume"]).on_balance_volume()
@@ -45,30 +35,13 @@ def analyze_full_stock(code):
                 "RSI": {"값": round(df["RSI"].iloc[-1], 2), "해석": "과매수 경계" if df["RSI"].iloc[-1] > 70 else "정상"},
                 "CCI": {"값": round(df["CCI"].iloc[-1], 2), "해석": "단기 급등 흐름" if df["CCI"].iloc[-1] > 100 else "중립"},
                 "OBV 변화": int(df["OBV"].iloc[-1] - df["OBV"].iloc[-2]),
-                "이동평균": f"{ma_order} (추세 확인용)",
+                "이동평균 배열": f"{ma_order}",
                 "현재가 vs 60일선": "상단" if cur > df["MA60"].iloc[-1] else "하단",
                 "현재가 vs 120일선": "상단" if cur > df["MA120"].iloc[-1] else "하단"
             },
-            "주가데이터": df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(1300).to_dict(orient="records"),  # 약 5년치 (252거래일×5년)
             "요약": "상승 흐름 지속 중. RSI 과열 주의." if df["RSI"].iloc[-1] > 70 else "단기 안정 흐름."
         }
+
     except Exception as e:
         return {"error": str(e)}
-
-@app.route("/")
-def health_check():
-    return "서비스 정상 작동 중입니다.", 200
-
-@app.route("/full_analysis")
-def full_analysis():
-    symbol = request.args.get("symbol")
-    code = symbol if symbol.isdigit() else _name2code(symbol)
-    if not code:
-        return jsonify({"error": "유효한 종목명 또는 코드가 아닙니다."}), 404
-    result = analyze_full_stock(code)
-    return jsonify(result)
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
 
