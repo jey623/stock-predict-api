@@ -12,12 +12,7 @@ def _code2name(code):
 def _name2code(name):
     return krx.loc[krx["Name"] == name, "Code"].squeeze()
 
-@app.route("/stock_data")
-def get_stock_data():
-    symbol = request.args.get("symbol")
-    code = symbol if symbol.isdigit() else _name2code(symbol)
-    if not code:
-        return jsonify({"error": "유효한 종목명 또는 코드가 아닙니다."}), 404
+def get_stock_data_with_indicators(code):
     try:
         df = fdr.DataReader(code, start="2014-01-01").dropna().copy()
         df.reset_index(inplace=True)
@@ -31,15 +26,24 @@ def get_stock_data():
         df["MA120"] = df["Close"].rolling(window=120).mean()
 
         df_filtered = df.dropna().copy()
-
-        return jsonify({
+        return {
             "종목명": _code2name(code),
             "종목코드": code,
-            "주가데이터": df_filtered.to_dict(orient="records")  # 전체 10년 데이터 반환
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
+            "주가데이터": df_filtered.to_dict(orient="records")
+        }
+    except:
+        return None
+
+@app.route("/full_analysis")
+def full_analysis():
+    symbol = request.args.get("symbol")
+    code = symbol if symbol.isdigit() else _name2code(symbol)
+    if not code:
+        return jsonify({"error": "유효한 종목명 또는 코드가 아닙니다."}), 404
+    result = get_stock_data_with_indicators(code)
+    return jsonify(result or {"message": "분석에 실패했습니다."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
