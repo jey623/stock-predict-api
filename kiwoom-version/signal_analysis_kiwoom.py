@@ -15,7 +15,8 @@ def _name2code(name):
 
 def analyze_full_stock(code):
     try:
-        df = fdr.DataReader(code, start="2014-01-01").dropna().copy()
+        # ✅ 5년치로 변경
+        df = fdr.DataReader(code, start="2019-01-01").dropna().copy()
         df.reset_index(inplace=True)
 
         # 기술 지표 계산
@@ -48,7 +49,7 @@ def analyze_full_stock(code):
                 "현재가 vs 60일선": "상단" if cur > df["MA60"].iloc[-1] else "하단",
                 "현재가 vs 120일선": "상단" if cur > df["MA120"].iloc[-1] else "하단"
             },
-            "주가데이터": df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(2600).to_dict(orient="records"),
+            "주가데이터": df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(1300).to_dict(orient="records"),  # 약 5년치 (252거래일×5년)
             "요약": "상승 흐름 지속 중. RSI 과열 주의." if df["RSI"].iloc[-1] > 70 else "단기 안정 흐름."
         }
     except Exception as e:
