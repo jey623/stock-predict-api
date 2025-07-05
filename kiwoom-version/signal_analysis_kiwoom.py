@@ -71,6 +71,7 @@ def analyze_full_stock(code):
         return None
 
 @app.route("/full_analysis")
+@app.route("/analyze")
 def full_analysis():
     symbol = request.args.get("symbol")
     code = symbol if symbol.isdigit() else _name2code(symbol)
