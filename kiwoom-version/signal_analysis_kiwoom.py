@@ -1,5 +1,3 @@
-# 최종버전: 통계 + 기술지표(CCI, MA 5/20/60/120 포함) 기반 확률 분석
-
 from datetime import datetime
 import pandas as pd, FinanceDataReader as fdr, ta
 from flask import Flask, request, jsonify
@@ -8,10 +6,10 @@ app = Flask(__name__)
 krx = fdr.StockListing("KRX")
 
 def _code2name(code):
-    return krx.loc[krx["Code"] == code, "Name"].squeeze()
+    return str(krx.loc[krx["Code"] == code, "Name"].squeeze())
 
 def _name2code(name):
-    return krx.loc[krx["Name"] == name, "Code"].squeeze()
+    return str(krx.loc[krx["Name"] == name, "Code"].squeeze())
 
 def analyze_stock_prob(code):
     try:
@@ -23,9 +21,9 @@ def analyze_stock_prob(code):
         count_stop = 0
 
         for i in range(len(df) - 5):
-            entry = df.loc[i, "Close"]
-            high5 = df.loc[i+1:i+5, "High"].max()
-            low5 = df.loc[i+1:i+5, "Low"].min()
+            entry = float(df.loc[i, "Close"])
+            high5 = float(df.loc[i+1:i+5, "High"].max())
+            low5 = float(df.loc[i+1:i+5, "Low"].min())
 
             target_up = entry * 1.03
             target_down = entry * 0.97
@@ -48,27 +46,27 @@ def analyze_stock_prob(code):
         df["MA60"] = df["Close"].rolling(window=60).mean()
         df["MA120"] = df["Close"].rolling(window=120).mean()
 
-        rsi = round(df["RSI"].iloc[-1], 2)
-        cci = round(df["CCI"].iloc[-1], 2)
-        obv_trend = df["OBV"].iloc[-1] - df["OBV"].iloc[-2]
-        golden = df["MA5"].iloc[-1] > df["MA20"].iloc[-1]
-        dead = df["MA5"].iloc[-1] < df["MA20"].iloc[-1]
+        rsi = round(float(df["RSI"].iloc[-1]), 2)
+        cci = round(float(df["CCI"].iloc[-1]), 2)
+        obv_trend = float(df["OBV"].iloc[-1] - df["OBV"].iloc[-2])
+        golden = bool(df["MA5"].iloc[-1] > df["MA20"].iloc[-1])
+        dead = bool(df["MA5"].iloc[-1] < df["MA20"].iloc[-1])
 
         cur = float(df["Close"].iloc[-1])
-        ma60 = round(df["MA60"].iloc[-1], 2)
-        ma120 = round(df["MA120"].iloc[-1], 2)
+        ma60 = round(float(df["MA60"].iloc[-1]), 2)
+        ma120 = round(float(df["MA120"].iloc[-1]), 2)
 
         array = sorted([
-            ("MA5", df["MA5"].iloc[-1]),
-            ("MA20", df["MA20"].iloc[-1]),
-            ("MA60", df["MA60"].iloc[-1]),
-            ("MA120", df["MA120"].iloc[-1])
+            ("MA5", float(df["MA5"].iloc[-1])),
+            ("MA20", float(df["MA20"].iloc[-1])),
+            ("MA60", ma60),
+            ("MA120", ma120)
         ], key=lambda x: -x[1])
         ma_order = " > ".join([x[0] for x in array])
 
         return {
             "종목명": _code2name(code),
-            "종목코드": code,
+            "종목코드": str(code),
             "현재가": cur,
             "익절기준(+3%)": round(cur * 1.03, 2),
             "손절기준(−3%)": round(cur * 0.97, 2),
@@ -87,8 +85,8 @@ def analyze_stock_prob(code):
                 "이평선 배열": ma_order
             }
         }
-    except:
-        return None
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.route("/analyze")
 def api_analyze():
@@ -105,3 +103,4 @@ def api_analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
