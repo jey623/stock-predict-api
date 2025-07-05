@@ -17,7 +17,6 @@ class DLinear(nn.Module):
         self.linear = nn.Linear(input_size, pred_len)
 
     def forward(self, x):
-        # x: [batch, input_size]
         return self.linear(x)
 
 # 모델 학습 함수
@@ -38,7 +37,7 @@ def train_dlinear_model(series, input_len=60, pred_len=5):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     criterion = nn.MSELoss()
 
-    for _ in range(300):
+    for _ in range(100):  # 에폭 수 줄임
         model.train()
         optimizer.zero_grad()
         output = model(X_tensor)
@@ -72,7 +71,7 @@ def get_stock_technical_data():
 
     try:
         end_date = datetime.today()
-        start_date = end_date - timedelta(days=10*365)
+        start_date = end_date - timedelta(days=5*365)  # 최근 5년치 데이터로 변경
         df = fdr.DataReader(symbol, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
         df.reset_index(inplace=True)
 
@@ -80,7 +79,6 @@ def get_stock_technical_data():
         df['CCI'] = ta.trend.cci(high=df['High'], low=df['Low'], close=df['Close'])
         df['OBV'] = ta.volume.OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume']).on_balance_volume()
 
-        # 이동평균선 및 이격도 계산
         df['MA5'] = df['Close'].rolling(window=5).mean()
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA60'] = df['Close'].rolling(window=60).mean()
