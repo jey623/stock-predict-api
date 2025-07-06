@@ -35,7 +35,6 @@ def create_features(df):
     df['MACD_Hist'] = macd.macd_diff()
 
     df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=14).average_true_range()
-    df['Momentum'] = ta.momentum.MomentumIndicator(df['Close'], window=10).momentum()
     df['Volume_Change'] = df['Volume'].pct_change() * 100
 
     df = df.dropna()
@@ -52,7 +51,7 @@ def train_model(df, day):
         'RSI', 'CCI', 'OBV',
         'Stoch_K', 'Stoch_D',
         'MACD', 'MACD_Signal', 'MACD_Hist',
-        'ATR', 'Momentum', 'Volume_Change'
+        'ATR', 'Volume_Change'
     ]
     X = df[feature_cols]
     y = df[f'Target_{day}']
@@ -70,7 +69,7 @@ def predict_next(df, models):
         'RSI', 'CCI', 'OBV',
         'Stoch_K', 'Stoch_D',
         'MACD', 'MACD_Signal', 'MACD_Hist',
-        'ATR', 'Momentum', 'Volume_Change'
+        'ATR', 'Volume_Change'
     ]
     X_latest = latest[feature_cols]
     current_price = latest['Close'].values[0]
