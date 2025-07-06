@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 import pandas as pd, FinanceDataReader as fdr, ta
 import xgboost as xgb
 from flask import Flask, request, jsonify
@@ -112,5 +113,7 @@ def forecast():
     })
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10010)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
 
