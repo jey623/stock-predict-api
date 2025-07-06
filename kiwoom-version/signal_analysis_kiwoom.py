@@ -1,9 +1,8 @@
-# signal_analysis_kiwoom_v2.py
 from flask import Flask, request, jsonify
 import pandas as pd
 import FinanceDataReader as fdr
 import ta
-from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
 import datetime
 import os
 
@@ -28,14 +27,31 @@ def predict_future(df_ti, days=5):
     df = df.dropna()
     features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
     X, y = df[features], df['Target']
-    model = RandomForestRegressor(n_estimators=100, random_state=42)
+
+    # XGBoost 회귀 모델 적용
+    model = XGBRegressor(
+        n_estimators=100,
+        max_depth=3,
+        learning_rate=0.1,
+        objective='reg:squarederror',
+        random_state=42,
+        verbosity=0
+    )
     model.fit(X, y)
+
     last_feat = df.iloc[-1:][features].copy()
     preds = []
     for i in range(days):
         p = model.predict(last_feat)[0]
         preds.append(p)
-        last_feat.iloc[0] = p  # 최근 피처에 예측가 반영 (단, 단순 대입)
+        last_feat.iloc[0, features.index('MA5')] = p  # 단순 대입: 실제 지표 업데이트는 불가
+        last_feat.iloc[0, features.index('MA20')] = p
+        last_feat.iloc[0, features.index('MA60')] = p
+        last_feat.iloc[0, features.index('MA120')] = p
+        last_feat.iloc[0, features.index('Disparity')] = 100
+        last_feat.iloc[0, features.index('OBV')] = df['OBV'].iloc[-1]  # 그대로 유지
+        last_feat.iloc[0, features.index('RSI')] = df['RSI'].iloc[-1]  # 그대로 유지
+        last_feat.iloc[0, features.index('CCI')] = df['CCI'].iloc[-1]  # 그대로 유지
     return preds
 
 @app.route('/full_analysis', methods=['GET'])
@@ -58,7 +74,6 @@ def full_analysis():
     df_ti = compute_technical_indicators(df)
     preds = predict_future(df_ti, days=5)
 
-    # 오늘 기준 최신 피처들
     latest = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
 
     dates = []
@@ -66,7 +81,7 @@ def full_analysis():
     cnt = 0
     while len(dates) < 5:
         next_day = last_date + datetime.timedelta(days=1 + cnt)
-        if next_day.weekday() < 5:  # 평일만
+        if next_day.weekday() < 5:
             dates.append(next_day.strftime('%Y-%m-%d'))
         cnt += 1
 
@@ -82,5 +97,6 @@ def full_analysis():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+
 
 
