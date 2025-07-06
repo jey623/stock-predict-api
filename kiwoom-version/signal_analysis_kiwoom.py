@@ -1,25 +1,17 @@
+# signal_analysis_kiwoom_v2.py
 from flask import Flask, request, jsonify
 import pandas as pd
 import FinanceDataReader as fdr
 import ta
-from xgboost import XGBRegressor
+from sklearn.ensemble import RandomForestRegressor
 import datetime
 import os
 
 app = Flask(__name__)
 
-# 🔄 종목명 ↔ 코드 매핑 테이블 준비 (KRX 전체 기준)
-stock_map = fdr.StockListing("KRX")[["Name", "Code"]].set_index("Name")["Code"].to_dict()
-code_to_name = fdr.StockListing("KRX")[["Code", "Name"]].set_index("Code")["Name"].to_dict()
-
-def resolve_symbol(symbol):
-    """종목명이면 코드로 변환, 코드면 그대로"""
-    if symbol.isdigit():
-        return symbol
-    return stock_map.get(symbol)
-
 def compute_technical_indicators(df):
     df = df.copy()
+    # RSI, CCI, OBV, Disparity, 이동평균
     df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
     df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close'], window=20).cci()
     df['OBV'] = ta.volume.OnBalanceVolumeIndicator(df['Close'], df['Volume']).on_balance_volume()
@@ -36,49 +28,28 @@ def predict_future(df_ti, days=5):
     df = df.dropna()
     features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
     X, y = df[features], df['Target']
-
-    model = XGBRegressor(
-        n_estimators=100,
-        max_depth=3,
-        learning_rate=0.1,
-        objective='reg:squarederror',
-        random_state=42,
-        verbosity=0
-    )
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
-
     last_feat = df.iloc[-1:][features].copy()
     preds = []
     for i in range(days):
         p = model.predict(last_feat)[0]
         preds.append(p)
-        last_feat.iloc[0, features.index('MA5')] = p
-        last_feat.iloc[0, features.index('MA20')] = p
-        last_feat.iloc[0, features.index('MA60')] = p
-        last_feat.iloc[0, features.index('MA120')] = p
-        last_feat.iloc[0, features.index('Disparity')] = 100
-        last_feat.iloc[0, features.index('OBV')] = df['OBV'].iloc[-1]
-        last_feat.iloc[0, features.index('RSI')] = df['RSI'].iloc[-1]
-        last_feat.iloc[0, features.index('CCI')] = df['CCI'].iloc[-1]
+        last_feat.iloc[0] = p  # 최근 피처에 예측가 반영 (단, 단순 대입)
     return preds
 
 @app.route('/full_analysis', methods=['GET'])
 def full_analysis():
-    symbol_raw = request.args.get('symbol')
+    symbol = request.args.get('symbol')
     period = int(request.args.get('period', 5))
     period = max(1, min(period, 10))
-
-    if not symbol_raw:
+    if not symbol:
         return jsonify({'error': 'symbol 파라미터가 필요합니다'}), 400
-
-    symbol_code = resolve_symbol(symbol_raw)
-    if not symbol_code:
-        return jsonify({'error': f'종목명 또는 코드 "{symbol_raw}" 을(를) 찾을 수 없습니다.'}), 404
 
     end = datetime.datetime.now()
     start = end - datetime.timedelta(days=365*period)
     try:
-        df = fdr.DataReader(symbol_code, start, end)
+        df = fdr.DataReader(symbol, start, end)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     if df.empty:
@@ -86,6 +57,8 @@ def full_analysis():
 
     df_ti = compute_technical_indicators(df)
     preds = predict_future(df_ti, days=5)
+
+    # 오늘 기준 최신 피처들
     latest = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
 
     dates = []
@@ -93,13 +66,12 @@ def full_analysis():
     cnt = 0
     while len(dates) < 5:
         next_day = last_date + datetime.timedelta(days=1 + cnt)
-        if next_day.weekday() < 5:
+        if next_day.weekday() < 5:  # 평일만
             dates.append(next_day.strftime('%Y-%m-%d'))
         cnt += 1
 
     return jsonify({
-        'symbol': symbol_code,
-        'symbol_name': code_to_name.get(symbol_code, 'Unknown'),
+        'symbol': symbol,
         'period_years': period,
         'latest_indicators': {k: float(v) for k, v in latest.items()},
         'predicted_close_next_5': [
@@ -110,6 +82,5 @@ def full_analysis():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
-
 
 
