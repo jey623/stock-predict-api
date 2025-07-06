@@ -8,16 +8,7 @@ import os
 
 app = Flask(__name__)
 
-# 종목명 → 코드, 코드 → 종목명 매핑 생성
-krx = fdr.StockListing("KRX")
-name_to_code = krx.set_index("Name")["Code"].to_dict()
-code_to_name = krx.set_index("Code")["Name"].to_dict()
-
-def resolve_symbol(symbol):
-    """종목명 → 코드 변환"""
-    return symbol if symbol.isdigit() else name_to_code.get(symbol)
-
-def compute_indicators(df):
+def compute_technical_indicators(df):
     df = df.copy()
     df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
     df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close'], window=20).cci()
@@ -29,80 +20,66 @@ def compute_indicators(df):
     df['MA120'] = df['Close'].rolling(120).mean()
     return df.dropna()
 
-def predict_next_5_days(df_ti):
+def predict_future(df_ti, days=5):
     df = df_ti.copy()
-    df['Target'] = df['Close'].shift(-5)
+    df['Target'] = df['Close'].shift(-days)
     df = df.dropna()
     features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
     X, y = df[features], df['Target']
-
-    model = XGBRegressor(
-        n_estimators=100,
-        max_depth=3,
-        learning_rate=0.1,
-        objective='reg:squarederror',
-        random_state=42,
-        verbosity=0
-    )
+    model = XGBRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
-
-    last = df.iloc[-1:][features]
+    last_feat = df.iloc[-1:][features].copy()
     preds = []
-    for _ in range(5):
-        p = model.predict(last)[0]
+    for _ in range(days):
+        p = model.predict(last_feat)[0]
         preds.append(p)
-        last.iloc[0, features.index('MA5')] = p
-        last.iloc[0, features.index('MA20')] = p
-        last.iloc[0, features.index('MA60')] = p
-        last.iloc[0, features.index('MA120')] = p
+        last_feat.iloc[0, 0] = p  # 단순히 예측값을 RSI에 대입 (대체 아님)
     return preds
-
-@app.route('/')
-def home():
-    return '📈 Stock Prediction API is running. Try /predict?symbol=삼성전자'
 
 @app.route('/predict', methods=['GET'])
 def predict():
-    symbol_input = request.args.get('symbol')
-    period_years = int(request.args.get('period', 5))
+    symbol = request.args.get('symbol')
+    period = int(request.args.get('period', 5))
+    period = max(1, min(period, 10))
 
-    if not symbol_input:
+    if not symbol:
         return jsonify({'error': 'symbol 파라미터가 필요합니다'}), 400
 
-    symbol = resolve_symbol(symbol_input)
-    if not symbol:
-        return jsonify({'error': f'종목명 또는 코드 "{symbol_input}"을 찾을 수 없습니다'}), 404
-
     end = datetime.datetime.now()
-    start = end - datetime.timedelta(days=365 * period_years)
+    start = end - datetime.timedelta(days=365 * period)
 
     try:
         df = fdr.DataReader(symbol, start, end)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
     if df.empty:
         return jsonify({'error': '데이터가 없습니다'}), 404
 
-    df_ti = compute_indicators(df)
-    preds = predict_next_5_days(df_ti)
+    df_ti = compute_technical_indicators(df)
+    preds = predict_future(df_ti, days=5)
 
     latest = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
-    last_date = df_ti.index[-1]
+    latest_close = df['Close'].iloc[-1]  # 현재가
+
+    # 다음 5거래일 날짜 계산
     dates = []
-    i = 1
+    last_date = df.index[-1]
+    cnt = 1
     while len(dates) < 5:
-        d = last_date + datetime.timedelta(days=i)
-        if d.weekday() < 5:
-            dates.append(d.strftime('%Y-%m-%d'))
-        i += 1
+        next_day = last_date + datetime.timedelta(days=cnt)
+        if next_day.weekday() < 5:
+            dates.append(next_day.strftime('%Y-%m-%d'))
+        cnt += 1
 
     return jsonify({
-        'symbol': symbol,
-        'symbol_name': code_to_name.get(symbol, 'Unknown'),
-        'period_years': period_years,
-        'latest_indicators': {k: float(v) for k, v in latest.items()},
-        'predicted_close_next_5': [
-            {'date': d, 'predicted_close': float(p)}
+        '종목코드': symbol,
+        '종목명': symbol,  # 종목명 자동 매핑 기능이 있다면 변경
+        '기간_년': period,
+        '현재가': round(float(latest_close), 2),
+        '최신지표': {k: round(float(v), 4) for k, v in latest.items()},
+        '예측종가_5일': [
+            {'날짜': d, '예측종가': round(float(p), 2)}
             for d, p in zip(dates, preds)
         ]
     })
