@@ -8,9 +8,18 @@ import os
 
 app = Flask(__name__)
 
+# 🔄 종목명 ↔ 코드 매핑 테이블 준비 (KRX 전체 기준)
+stock_map = fdr.StockListing("KRX")[["Name", "Code"]].set_index("Name")["Code"].to_dict()
+code_to_name = fdr.StockListing("KRX")[["Code", "Name"]].set_index("Code")["Name"].to_dict()
+
+def resolve_symbol(symbol):
+    """종목명이면 코드로 변환, 코드면 그대로"""
+    if symbol.isdigit():
+        return symbol
+    return stock_map.get(symbol)
+
 def compute_technical_indicators(df):
     df = df.copy()
-    # RSI, CCI, OBV, Disparity, 이동평균
     df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
     df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close'], window=20).cci()
     df['OBV'] = ta.volume.OnBalanceVolumeIndicator(df['Close'], df['Volume']).on_balance_volume()
@@ -28,7 +37,6 @@ def predict_future(df_ti, days=5):
     features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
     X, y = df[features], df['Target']
 
-    # XGBoost 회귀 모델 적용
     model = XGBRegressor(
         n_estimators=100,
         max_depth=3,
@@ -44,28 +52,33 @@ def predict_future(df_ti, days=5):
     for i in range(days):
         p = model.predict(last_feat)[0]
         preds.append(p)
-        last_feat.iloc[0, features.index('MA5')] = p  # 단순 대입: 실제 지표 업데이트는 불가
+        last_feat.iloc[0, features.index('MA5')] = p
         last_feat.iloc[0, features.index('MA20')] = p
         last_feat.iloc[0, features.index('MA60')] = p
         last_feat.iloc[0, features.index('MA120')] = p
         last_feat.iloc[0, features.index('Disparity')] = 100
-        last_feat.iloc[0, features.index('OBV')] = df['OBV'].iloc[-1]  # 그대로 유지
-        last_feat.iloc[0, features.index('RSI')] = df['RSI'].iloc[-1]  # 그대로 유지
-        last_feat.iloc[0, features.index('CCI')] = df['CCI'].iloc[-1]  # 그대로 유지
+        last_feat.iloc[0, features.index('OBV')] = df['OBV'].iloc[-1]
+        last_feat.iloc[0, features.index('RSI')] = df['RSI'].iloc[-1]
+        last_feat.iloc[0, features.index('CCI')] = df['CCI'].iloc[-1]
     return preds
 
 @app.route('/full_analysis', methods=['GET'])
 def full_analysis():
-    symbol = request.args.get('symbol')
+    symbol_raw = request.args.get('symbol')
     period = int(request.args.get('period', 5))
     period = max(1, min(period, 10))
-    if not symbol:
+
+    if not symbol_raw:
         return jsonify({'error': 'symbol 파라미터가 필요합니다'}), 400
+
+    symbol_code = resolve_symbol(symbol_raw)
+    if not symbol_code:
+        return jsonify({'error': f'종목명 또는 코드 "{symbol_raw}" 을(를) 찾을 수 없습니다.'}), 404
 
     end = datetime.datetime.now()
     start = end - datetime.timedelta(days=365*period)
     try:
-        df = fdr.DataReader(symbol, start, end)
+        df = fdr.DataReader(symbol_code, start, end)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     if df.empty:
@@ -73,7 +86,6 @@ def full_analysis():
 
     df_ti = compute_technical_indicators(df)
     preds = predict_future(df_ti, days=5)
-
     latest = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
 
     dates = []
@@ -86,7 +98,8 @@ def full_analysis():
         cnt += 1
 
     return jsonify({
-        'symbol': symbol,
+        'symbol': symbol_code,
+        'symbol_name': code_to_name.get(symbol_code, 'Unknown'),
         'period_years': period,
         'latest_indicators': {k: float(v) for k, v in latest.items()},
         'predicted_close_next_5': [
