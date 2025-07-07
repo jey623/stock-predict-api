@@ -1,86 +1,73 @@
-# signal_analysis_kiwoom_v2.py
-from flask import Flask, request, jsonify
-import pandas as pd
+# recommend_generator.py
+# 전자책 기반 바닥권 전략 + 2년치 데이터 분석 + 전체 종목 분할 분석 + 종목명/코드 직접 출력
+
 import FinanceDataReader as fdr
+import pandas as pd
 import ta
-from sklearn.ensemble import RandomForestRegressor
 import datetime
-import os
+import time
 
-app = Flask(__name__)
+# 1. 날짜 설정 (최근 2년)
+end_date = datetime.datetime.now()
+start_date = end_date - datetime.timedelta(days=365 * 2)
 
-def compute_technical_indicators(df):
-    df = df.copy()
-    # RSI, CCI, OBV, Disparity, 이동평균
-    df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
-    df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close'], window=20).cci()
-    df['OBV'] = ta.volume.OnBalanceVolumeIndicator(df['Close'], df['Volume']).on_balance_volume()
-    df['Disparity'] = df['Close'] / df['Close'].rolling(5).mean() * 100
-    df['MA5'] = df['Close'].rolling(5).mean()
-    df['MA20'] = df['Close'].rolling(20).mean()
-    df['MA60'] = df['Close'].rolling(60).mean()
-    df['MA120'] = df['Close'].rolling(120).mean()
-    return df.dropna()
+# 2. 전체 KRX (코스피+코스닥) 종목 리스트 불러오기
+krx_listed = fdr.StockListing('KRX')
+codes = krx_listed['Code'].tolist()
 
-def predict_future(df_ti, days=5):
-    df = df_ti.copy()
-    df['Target'] = df['Close'].shift(-days)
-    df = df.dropna()
-    features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
-    X, y = df[features], df['Target']
-    model = RandomForestRegressor(n_estimators=100, random_state=42)
-    model.fit(X, y)
-    last_feat = df.iloc[-1:][features].copy()
-    preds = []
-    for i in range(days):
-        p = model.predict(last_feat)[0]
-        preds.append(p)
-        last_feat.iloc[0] = p  # 최근 피처에 예측가 반영 (단, 단순 대입)
-    return preds
+recommendations = []
 
-@app.route('/full_analysis', methods=['GET'])
-def full_analysis():
-    symbol = request.args.get('symbol')
-    period = int(request.args.get('period', 5))
-    period = max(1, min(period, 10))
-    if not symbol:
-        return jsonify({'error': 'symbol 파라미터가 필요합니다'}), 400
-
-    end = datetime.datetime.now()
-    start = end - datetime.timedelta(days=365*period)
+# 3. 바닥권 전략 조건 분석 함수
+def analyze_stock(code, name):
     try:
-        df = fdr.DataReader(symbol, start, end)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    if df.empty:
-        return jsonify({'error': '데이터가 없습니다'}), 404
+        df = fdr.DataReader(code, start=start_date, end=end_date)
+        if df.shape[0] < 100:
+            return None
 
-    df_ti = compute_technical_indicators(df)
-    preds = predict_future(df_ti, days=5)
+        # 기술적 지표 계산
+        df['MA5'] = df['Close'].rolling(window=5).mean()
+        df['MA20'] = df['Close'].rolling(window=20).mean()
+        df['Disparity'] = df['Close'] / df['MA5'] * 100
+        df['OBV'] = ta.volume.OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume']).on_balance_volume()
+        df['OBV_diff'] = df['OBV'].diff()
 
-    # 오늘 기준 최신 피처들
-    latest = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
+        recent = df.iloc[-5:]
 
-    dates = []
-    last_date = df_ti.index[-1]
-    cnt = 0
-    while len(dates) < 5:
-        next_day = last_date + datetime.timedelta(days=1 + cnt)
-        if next_day.weekday() < 5:  # 평일만
-            dates.append(next_day.strftime('%Y-%m-%d'))
-        cnt += 1
+        # 전자책 바닥권 전략 조건
+        cond_disparity = recent['Disparity'].iloc[-1] < 92
+        cond_golden = (
+            recent['MA5'].iloc[-1] > recent['MA20'].iloc[-1]
+            and recent['MA5'].iloc[-2] <= recent['MA20'].iloc[-2]
+        )
+        cond_obv = (recent['OBV_diff'] > 0).sum() >= 3
+        cond_volume = recent['Volume'].iloc[-1] > df['Volume'].rolling(window=20).mean().iloc[-1]
 
-    return jsonify({
-        'symbol': symbol,
-        'period_years': period,
-        'latest_indicators': {k: float(v) for k, v in latest.items()},
-        'predicted_close_next_5': [
-            {'date': d, 'predicted_close': float(p)}
-            for d, p in zip(dates, preds)
-        ]
-    })
+        if cond_disparity and cond_golden and cond_obv and cond_volume:
+            return {
+                '종목명': name,
+                '종목코드': code,
+                '현재가': round(df['Close'].iloc[-1], 2)
+            }
+    except:
+        return None
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+# 4. 전체 종목 분할 분석 (100개씩 나누기)
+batch_size = 100
+for i in range(0, len(krx_listed), batch_size):
+    batch = krx_listed.iloc[i:i+batch_size]
+    for idx, row in batch.iterrows():
+        result = analyze_stock(row['Code'], row['Name'])
+        if result:
+            recommendations.append(result)
+    time.sleep(1)
+
+# 5. 자연어 형태로 결과 출력
+print("\n📈 바닥권 전략 추천 종목 ({} 기준):".format(end_date.date()))
+
+if recommendations:
+    for i, stock in enumerate(recommendations, 1):
+        print(f"{i}. {stock['종목명']} ({stock['종목코드']}) - 현재가: {stock['현재가']}원")
+else:
+    print("오늘은 조건에 맞는 종목이 없습니다.")
 
 
