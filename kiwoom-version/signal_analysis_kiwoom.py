@@ -1,5 +1,5 @@
 # recommend_generator.py
-# 전자책 기반 바닥권 전략 + 2년치 데이터 분석 + 전체 종목 분할 분석 + 종목명/코드 직접 출력 + 익절 3% 가능성 포함
+# 전자책 기반 바닥권 전략 + 2년치 데이터 분석 + 전체 종목 분할 분석 + 익절 3% 도달 확률 80% 이상 필터 적용 + 종목명/코드 자연어 출력
 
 import FinanceDataReader as fdr
 import pandas as pd
@@ -17,7 +17,7 @@ codes = krx_listed['Code'].tolist()
 
 recommendations = []
 
-# 3. 바닥권 전략 조건 분석 함수 + 익절 3% 도달 가능성 평가
+# 3. 바닥권 전략 조건 분석 함수 + 익절 3% 도달 확률 평가
 def analyze_stock(code, name):
     try:
         df = fdr.DataReader(code, start=start_date, end=end_date)
@@ -43,8 +43,7 @@ def analyze_stock(code, name):
         cond_volume = recent['Volume'].iloc[-1] > df['Volume'].rolling(window=20).mean().iloc[-1]
 
         if cond_disparity and cond_golden and cond_obv and cond_volume:
-            # 익절 3% 도달 가능성 계산 (간단 버전)
-            signal_idx = df.index[-1]
+            # 과거 유사 조건에서 10일 내 3% 도달 확률 계산
             success_count = 0
             check_count = 0
 
@@ -64,12 +63,14 @@ def analyze_stock(code, name):
 
             probability = round((success_count / check_count * 100), 1) if check_count > 0 else None
 
-            return {
-                '종목명': name,
-                '종목코드': code,
-                '현재가': round(df['Close'].iloc[-1], 2),
-                '익절3%도달확률': f"{probability}%" if probability is not None else "통계 부족"
-            }
+            # ✅ 80% 이상일 때만 추천 포함
+            if probability is not None and probability >= 80:
+                return {
+                    '종목명': name,
+                    '종목코드': code,
+                    '현재가': round(df['Close'].iloc[-1], 2),
+                    '익절3%도달확률': f"{probability}%"
+                }
     except:
         return None
 
@@ -91,4 +92,3 @@ if recommendations:
         print(f"{i}. {stock['종목명']} ({stock['종목코드']}) - 현재가: {stock['현재가']}원 / 10일 내 +3% 도달 확률: {stock['익절3%도달확률']}")
 else:
     print("오늘은 조건에 맞는 종목이 없습니다.")
-
