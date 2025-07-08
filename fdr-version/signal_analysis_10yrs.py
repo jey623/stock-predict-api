@@ -9,9 +9,8 @@ import os
 app = Flask(__name__)
 
 def resolve_symbol(symbol_or_name):
-    """종목명 또는 종목코드를 종목코드로 변환"""
     if symbol_or_name.isdigit():
-        return symbol_or_name, symbol_or_name  # 코드 그대로 사용
+        return symbol_or_name, symbol_or_name
     try:
         stock_list = fdr.StockListing('KRX')
         matched = stock_list[stock_list['Name'] == symbol_or_name]
@@ -35,7 +34,7 @@ def compute_technical_indicators(df):
     df['MA120'] = df['Close'].rolling(120).mean()
     return df.dropna()
 
-def predict_future(df_ti, days=5):
+def predict_future(df_ti, days=10):
     df = df_ti.copy()
     df['Target'] = df['Close'].shift(-days)
     df = df.dropna()
@@ -48,14 +47,32 @@ def predict_future(df_ti, days=5):
     for _ in range(days):
         p = model.predict(last_feat)[0]
         preds.append(p)
-        last_feat.iloc[0, 0] = p  # RSI에 임시 대입 (모형 입력 유지용)
+        last_feat.iloc[0, 0] = p  # RSI에 임시 대입
     return preds
+
+def calculate_mdd(df):
+    """최대 낙폭 (MDD) 계산"""
+    cummax = df['Close'].cummax()
+    drawdown = (df['Close'] - cummax) / cummax
+    mdd = drawdown.min()
+    return round(float(mdd) * 100, 2)
+
+def calculate_cagr(df):
+    """연복리 수익률 (CAGR) 계산"""
+    start_value = df['Close'].iloc[0]
+    end_value = df['Close'].iloc[-1]
+    years = (df.index[-1] - df.index[0]).days / 365.0
+    if years == 0:
+        return 0.0
+    cagr = ((end_value / start_value) ** (1 / years)) - 1
+    return round(float(cagr) * 100, 2)
 
 @app.route('/predict', methods=['GET'])
 def predict():
     symbol_input = request.args.get('symbol')
     period = int(request.args.get('period', 5))
     period = max(1, min(period, 10))
+    days = 10  # 예측일 고정
 
     if not symbol_input:
         return jsonify({'error': 'symbol 파라미터가 필요합니다'}), 400
@@ -76,15 +93,18 @@ def predict():
         return jsonify({'error': '데이터가 없습니다'}), 404
 
     df_ti = compute_technical_indicators(df)
-    preds = predict_future(df_ti, days=5)
+    preds = predict_future(df_ti, days=days)
     latest_indicators = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
     latest_close = df['Close'].iloc[-1]
 
-    # 예측 날짜
+    mdd = calculate_mdd(df)
+    cagr = calculate_cagr(df)
+
+    # 예측 날짜 생성
     dates = []
     last_date = df.index[-1]
     cnt = 1
-    while len(dates) < 5:
+    while len(dates) < days:
         next_day = last_date + datetime.timedelta(days=cnt)
         if next_day.weekday() < 5:
             dates.append(next_day.strftime('%Y-%m-%d'))
@@ -96,10 +116,12 @@ def predict():
         '기간_년': period,
         '현재가': round(float(latest_close), 2),
         '최신지표': {k: round(float(v), 4) for k, v in latest_indicators.items()},
-        '예측종가_5일': [
+        '예측종가_10일': [
             {'날짜': d, '예측종가': round(float(p), 2)}
             for d, p in zip(dates, preds)
-        ]
+        ],
+        'MDD': f'{mdd} %',
+        'CAGR': f'{cagr} %'
     })
 
 if __name__ == '__main__':
