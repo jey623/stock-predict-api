@@ -51,14 +51,12 @@ def predict_future(df_ti, days=10):
     return preds
 
 def calculate_mdd(df):
-    """최대 낙폭 (MDD) 계산"""
     cummax = df['Close'].cummax()
     drawdown = (df['Close'] - cummax) / cummax
     mdd = drawdown.min()
     return round(float(mdd) * 100, 2)
 
 def calculate_cagr(df):
-    """연복리 수익률 (CAGR) 계산"""
     start_value = df['Close'].iloc[0]
     end_value = df['Close'].iloc[-1]
     years = (df.index[-1] - df.index[0]).days / 365.0
@@ -72,7 +70,7 @@ def predict():
     symbol_input = request.args.get('symbol')
     period = int(request.args.get('period', 5))
     period = max(1, min(period, 10))
-    days = 10  # 예측일 고정
+    days = 10
 
     if not symbol_input:
         return jsonify({'error': 'symbol 파라미터가 필요합니다'}), 400
@@ -100,7 +98,6 @@ def predict():
     mdd = calculate_mdd(df)
     cagr = calculate_cagr(df)
 
-    # 예측 날짜 생성
     dates = []
     last_date = df.index[-1]
     cnt = 1
@@ -126,5 +123,6 @@ def predict():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+
 
 
