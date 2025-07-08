@@ -34,9 +34,9 @@ def compute_technical_indicators(df):
     df['MA120'] = df['Close'].rolling(120).mean()
     return df.dropna()
 
-def predict_future(df_ti, days=10):
+def predict_future(df_ti, latest_close, days=10):
     df = df_ti.copy()
-    df['Target'] = df['Close'].shift(-days)
+    df['Target'] = (df['Close'].shift(-days) - df['Close']) / df['Close']
     df = df.dropna()
     features = ['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']
     X, y = df[features], df['Target']
@@ -45,9 +45,10 @@ def predict_future(df_ti, days=10):
     last_feat = df.iloc[-1:][features].copy()
     preds = []
     for _ in range(days):
-        p = model.predict(last_feat)[0]
-        preds.append(p)
-        last_feat.iloc[0, 0] = p  # RSI에 임시 대입
+        rate = model.predict(last_feat)[0]
+        latest_close *= (1 + rate)
+        preds.append(latest_close)
+        last_feat.iloc[0, 0] = rate  # RSI에 임시 대입
     return preds
 
 def calculate_mdd(df):
@@ -91,9 +92,9 @@ def predict():
         return jsonify({'error': '데이터가 없습니다'}), 404
 
     df_ti = compute_technical_indicators(df)
-    preds = predict_future(df_ti, days=days)
-    latest_indicators = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
     latest_close = df['Close'].iloc[-1]
+    preds = predict_future(df_ti, latest_close=latest_close, days=days)
+    latest_indicators = df_ti.iloc[-1][['RSI','CCI','OBV','Disparity','MA5','MA20','MA60','MA120']].to_dict()
 
     mdd = calculate_mdd(df)
     cagr = calculate_cagr(df)
