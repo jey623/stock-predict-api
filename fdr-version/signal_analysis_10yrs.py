@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import pandas as pd
+import numpy as np
 import FinanceDataReader as fdr
 import ta
 from xgboost import XGBRegressor
@@ -45,12 +46,18 @@ def predict_future(df_ti, latest_close, days=10):
     last_feat = df.iloc[-1:][features].copy()
     preds = []
     for _ in range(days):
-        rate = model.predict(last_feat)[0]
-        if pd.isna(rate) or abs(rate) > 0.5:
-            rate = 0
-        latest_close *= (1 + rate)
-        preds.append(latest_close)
-        last_feat.iloc[0, 0] = rate  # RSI에 임시 대입
+        try:
+            rate = model.predict(last_feat)[0]
+            if pd.isna(rate) or abs(rate) > 0.5:
+                rate = 0
+            latest_close *= (1 + rate)
+            if pd.isna(latest_close) or not np.isfinite(latest_close):
+                latest_close = df['Close'].iloc[-1]
+            preds.append(latest_close)
+            last_feat.iloc[0, 0] = rate
+        except Exception:
+            preds.append(latest_close)
+            continue
     return preds
 
 def calculate_mdd(df):
