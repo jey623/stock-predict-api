@@ -46,6 +46,8 @@ def predict_future(df_ti, latest_close, days=10):
     preds = []
     for _ in range(days):
         rate = model.predict(last_feat)[0]
+        if pd.isna(rate) or abs(rate) > 0.5:
+            rate = 0
         latest_close *= (1 + rate)
         preds.append(latest_close)
         last_feat.iloc[0, 0] = rate  # RSI에 임시 대입
@@ -124,6 +126,5 @@ def predict():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
-
 
 
