@@ -1,77 +1,56 @@
 from flask import Flask, request, jsonify
-import FinanceDataReader as fdr
-from prophet import Prophet
 import pandas as pd
-import datetime
-import os
+from prophet import Prophet
+import FinanceDataReader as fdr
 
 app = Flask(__name__)
 
-def resolve_symbol(symbol_or_name):
-    if symbol_or_name.isdigit():
-        return symbol_or_name, symbol_or_name
-    try:
-        stock_list = fdr.StockListing('KRX')
-        matched = stock_list[stock_list['Name'] == symbol_or_name]
-        if not matched.empty:
-            code = matched.iloc[0]['Code']
-            name = matched.iloc[0]['Name']
-            return code, name
-    except Exception:
-        pass
-    return None, None
+# Render Health Check 대응 (루트 URL은 반드시 200 OK)
+@app.route('/')
+def index():
+    return 'OK'
 
-@app.route('/predict', methods=['GET'])
+# 예측 엔드포인트 (기본: 10일, period=10)
+@app.route('/predict')
 def predict():
-    symbol_input = request.args.get('symbol')
-    period = int(request.args.get('period', 5))
-    period = max(1, min(period, 10))
-    days = 10
+    symbol = request.args.get('symbol')
+    period = int(request.args.get('period', 10))
 
-    if not symbol_input:
-        return jsonify({'error': 'symbol 파라미터가 필요합니다'}), 400
-
-    resolved_code, resolved_name = resolve_symbol(symbol_input)
-    if not resolved_code:
-        return jsonify({'error': f'"{symbol_input}"에 해당하는 종목코드를 찾을 수 없습니다.'}), 400
-
-    end = datetime.datetime.now()
-    start = end - datetime.timedelta(days=365 * period)
-
+    # 10년치 데이터 로드 (종목코드/이름 모두 지원)
     try:
-        df = fdr.DataReader(resolved_code, start, end)
+        df = fdr.DataReader(symbol)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": f"종목 데이터를 불러오지 못했습니다: {e}"}), 400
 
-    if df.empty:
-        return jsonify({'error': '데이터가 없습니다'}), 404
+    # Prophet 입력 포맷 변환
+    data = df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'}).dropna()
+    if len(data) < 365:
+        return jsonify({"error": "데이터가 1년 미만입니다."}), 400
 
-    # Prophet 데이터 준비
-    data = df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
-
-    # Prophet 모델 생성 및 학습
-    model = Prophet(daily_seasonality=True, yearly_seasonality=True)
+    # Prophet 모델 학습
+    model = Prophet(daily_seasonality=True)
     model.fit(data)
 
-    # 10거래일 예측 (평일만)
-    future = model.make_future_dataframe(periods=days, freq='B')
+    # 예측 날짜 생성 (거래일 기준)
+    future = model.make_future_dataframe(periods=period, freq='B')
     forecast = model.predict(future)
-    preds = forecast[['ds', 'yhat']].tail(days)
 
-    preds = [
-        {'날짜': row['ds'].strftime('%Y-%m-%d'), '예측종가': round(float(row['yhat']), 2)}
-        for _, row in preds.iterrows()
+    # 최근 N일 예측값만 반환
+    forecast_slice = forecast[['ds', 'yhat']].tail(period)
+    predict_list = [
+        {"날짜": row.ds.strftime('%Y-%m-%d'), "예측종가": round(row.yhat, 2)}
+        for _, row in forecast_slice.iterrows()
     ]
 
-    latest_close = float(df['Close'].iloc[-1])
-
-    return jsonify({
-        '종목명': resolved_name,
-        '종목코드': resolved_code,
-        '현재가': round(latest_close, 2),
-        '예측종가_10일': preds
-    })
+    # 응답 구조
+    result = {
+        "종목명": symbol,
+        "예측종가_10일": predict_list,
+        "최신일자_실제종가": float(data.iloc[-1].y),
+    }
+    return jsonify(result)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    app.run(host='0.0.0.0', port=10000)
+
 
