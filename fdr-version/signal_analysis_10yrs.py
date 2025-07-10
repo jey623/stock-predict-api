@@ -1,84 +1,71 @@
-from flask import Flask, request, jsonify
 import FinanceDataReader as fdr
 import pandas as pd
-from prophet import Prophet
 import datetime
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
-def get_code(symbol):
-    # 숫자로만 되어 있으면 그대로(코드), 아니면 한글→코드 매핑
-    if symbol.isdigit():
-        return symbol
-    try:
-        stock_list = fdr.StockListing('KRX')
-        code = stock_list.loc[stock_list['Name'] == symbol, 'Code']
-        if len(code) == 0:
-            return None
-        return code.values[0]
-    except Exception as e:
-        return None
+MIN_VOLUME = 1_000_000_000
+LOOKBACK_DAYS = 250
+MIN_HIGHS_DAYS = 120
+MAX_MARKETCAP = 2_000_000_000_000  # 2조
 
-@app.route('/')
-def index():
-    return "OK"
+def check_candidate(df):
+    if df.shape[0] < LOOKBACK_DAYS:
+        return False
+    last = df.iloc[-1]
+    if last['Volume'] * last['Close'] < MIN_VOLUME:
+        return False
+    box_low = df['Low'][-LOOKBACK_DAYS:].min()
+    prev_high = df['High'][-MIN_HIGHS_DAYS:].max()
+    if (last['Close'] > box_low * 1.15) and (last['High'] >= prev_high):
+        return True
+    return False
 
-@app.route('/predict', methods=['GET'])
-def predict():
-    symbol = request.args.get('symbol')
-    period = int(request.args.get('period', 10))
-    code = get_code(symbol)
+@app.route('/recommend')
+def recommend():
+    end_date = datetime.datetime.now()
+    start_date = end_date - datetime.timedelta(days=LOOKBACK_DAYS + 5)
 
-    if code is None:
-        return jsonify({'error': '종목 코드를 찾을 수 없습니다.'}), 400
+    # KRX 전체 종목 및 시가총액 정보 불러오기
+    krx = fdr.StockListing('KRX')
+    # 2조 이하 필터 적용
+    krx = krx[krx['Marcap'] <= MAX_MARKETCAP].reset_index(drop=True)
 
-    # 10년치 데이터 가져오기
-    end = datetime.datetime.today()
-    start = end - pd.DateOffset(years=10)
-    df = fdr.DataReader(code, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
+    results = []
+    # 거래대금 집계용 리스트
+    trading_list = []
+    for idx, row in krx.iterrows():
+        code = row['Code']
+        name = row['Name']
+        try:
+            df = fdr.DataReader(code, start=start_date, end=end_date)
+            if df.shape[0] < LOOKBACK_DAYS:
+                continue
+            last = df.iloc[-1]
+            trading_list.append({'code': code, 'name': name, 'df': df, 'trading_value': last['Close'] * last['Volume']})
+        except:
+            continue
 
-    if df is None or len(df) < 100:
-        return jsonify({'error': '종목 데이터를 불러오지 못했습니다.'}), 404
+    # 거래대금 상위 50위만 남김
+    trading_list = sorted(trading_list, key=lambda x: x['trading_value'], reverse=True)[:50]
 
-    # Prophet 입력 포맷 변환
-    df = df.reset_index()
-    df = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
+    # 각 후보 조건 체크
+    for stock in trading_list:
+        if check_candidate(stock['df']):
+            last = stock['df'].iloc[-1]
+            results.append({
+                '종목명': stock['name'],
+                '종목코드': stock['code'],
+                '현재가': int(last['Close']),
+                '추천사유': "박스권 저점 돌파, 전고점 경신, 거래대금 상위 50위, 시가총액 2조 이하"
+            })
 
-    # 최신 실제 종가, 종목명
-    latest_price = float(df['y'].iloc[-1])
-    stock_name = code
-    try:
-        stock_list = fdr.StockListing('KRX')
-        name_row = stock_list.loc[stock_list['Code'] == code, 'Name']
-        if len(name_row) > 0:
-            stock_name = name_row.values[0]
-    except:
-        pass
+    if not results:
+        return jsonify({"message": "오늘 조건에 맞는 추천 종목이 없습니다."}), 200
+    return jsonify(results), 200
 
-    # Prophet 예측
-    model = Prophet(daily_seasonality=True)
-    model.fit(df)
-
-    future = model.make_future_dataframe(periods=period)
-    forecast = model.predict(future)
-
-    pred = []
-    for i in range(-period, 0):
-        row = forecast.iloc[i]
-        pred.append({
-            "날짜": str(row['ds'].date()),
-            "예측종가": round(float(row['yhat']), 2)
-        })
-
-    result = {
-        "예측종가_10일": pred,
-        "종목명": stock_name,
-        "종목코드": code,
-        "최신일자_실제종가": latest_price
-    }
-    return jsonify(result)
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    app.run()
 
 
