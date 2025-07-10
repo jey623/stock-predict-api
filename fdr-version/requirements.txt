@@ -1,3 +1,4 @@
 flask
 pandas
+gunicorn
 git+https://github.com/FinanceData/FinanceDataReader.git
