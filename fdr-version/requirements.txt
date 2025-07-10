@@ -1,5 +1,5 @@
 flask
 pandas
 gunicorn
-ta
+statsmodels
 git+https://github.com/FinanceData/FinanceDataReader.git
